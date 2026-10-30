@@ -17,6 +17,7 @@ add_library(${PROJECT_NAME} SHARED
     src/geometry.cpp
     src/health.cpp
     src/manifest.cpp
+    src/pose_ekf.cpp
     src/sha256.cpp
 )
 add_library(foray_localization::core ALIAS ${PROJECT_NAME})
@@ -98,6 +99,7 @@ foray_add_test(test_geometry test/test_geometry.cpp)
 foray_add_test(test_health test/test_health.cpp)
 foray_add_test(test_sha256 test/test_sha256.cpp)
 foray_add_test(test_manifest test/test_manifest.cpp)
+foray_add_test(test_pose_ekf test/test_pose_ekf.cpp)
 
 if(ament_cmake_FOUND)
     ament_export_include_directories(include)

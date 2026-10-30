@@ -15,6 +15,16 @@
 #include <utility>
 
 namespace foray::localization_ros {
+
+namespace {
+
+/// 单调时钟差值（毫秒）。用 steady_clock 而不是节点时钟：这里量的是真实耗时，
+/// 仿真 /clock 会跳，量它没有意义。
+double elapsed_ms(const std::chrono::steady_clock::time_point& begin) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+}
+
+} // namespace
 namespace {
 
 constexpr double kDefaultStateRateHz = 50.0;
@@ -61,10 +71,42 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options)
     health_config_.recover_frames = declare_parameter<int>("recover_frames", 3);
     health_ = foray::localization::HealthMonitor(health_config_);
 
+    // 融合层滤波（decision.md D24）。默认关闭；关闭时 update() 逐字节透传量测，
+    // 位姿更新路径与引入滤波前完全一致。只暴露三个现场真正会调的旋钮，
+    // 其余噪声参数按 D22 的实测基线取默认值。
+    foray::localization::PoseEkfConfig filter_config;
+    filter_config.enabled = declare_parameter<bool>("filter_enabled", false);
+    filter_config.measurement_noise_translation_m =
+        declare_parameter<double>("filter_measurement_noise_m", 0.05);
+    filter_config.unobservable_noise_scale =
+        declare_parameter<double>("filter_unobservable_noise_scale", 10.0);
+    pose_filter_ = foray::localization::PoseEkf(filter_config);
+    if (filter_config.enabled) {
+        RCLCPP_INFO(get_logger(), "融合层 EKF 已启用: 量测噪声=%.3f m 不可观方向倍数=%.1f",
+                    filter_config.measurement_noise_translation_m,
+                    filter_config.unobservable_noise_scale);
+    }
+
     foray::localization_map::AlignOptions align_options;
     align_options.max_iterations = declare_parameter<int>("align_max_iterations", 10);
     align_options.max_correspondence_distance_m =
         declare_parameter<double>("align_max_correspondence_m", 0.5);
+    max_correspondence_distance_m_ = align_options.max_correspondence_distance_m;
+
+    // 视场裁切与可观测性（decision.md D23）。默认值必须让改造前后行为等价：
+    // 360x180 走 crop_by_fov 的全视场直通分支，阈值 0 表示不做方向约束。
+    fov_horizontal_deg_ = declare_parameter<double>("fov_horizontal_deg", 360.0);
+    fov_vertical_deg_ = declare_parameter<double>("fov_vertical_deg", 180.0);
+    fov_center_yaw_deg_ = declare_parameter<double>("fov_center_yaw_deg", 0.0);
+    observability_ratio_threshold_ =
+        declare_parameter<double>("observability_ratio_threshold", 0.0);
+    profile_enabled_ = declare_parameter<bool>("profile_enabled", false);
+    const int min_source_points_param = declare_parameter<int>("min_source_points", 0);
+    // 负值等价于「不设下限」：显式夹到 0，避免负值经 size_t 转换变成天文数字。
+    health_config_.min_source_points =
+        static_cast<std::size_t>(min_source_points_param > 0 ? min_source_points_param : 0);
+    health_config_.max_unobservable_dofs =
+        declare_parameter<int>("max_unobservable_dofs", 6);
     // 后端由编译期开关决定（decision.md D21）。启动时把实际后端打出来，
     // 免得出现「文档说 GICP、实际跑 ICP」这种只能在事后靠精度异常才发现的情况。
     aligner_ = foray::localization_map::make_aligner(align_options);
@@ -155,6 +197,19 @@ void LocalizationNode::load_map() {
     }
     map_ = std::move(map);
     has_map_ = true;
+    // 目标侧索引与法向只建一次：每帧重建是配准之外最贵的固定开销，
+    // 而它们只依赖地图，不依赖当前帧（decision.md D25）。
+    map_index_ = std::make_shared<foray::localization_map::PointCloudIndex>(
+        map_.cloud, max_correspondence_distance_m_);
+    // 法向邻域取 2 倍地图体素边长：单个体素内的点不足以定义一个面片。
+    // 体素参数为 0（不降采样）时退回 2 m，覆盖多数室内墙面的局部曲率。
+    const double normal_cell = 2.0 * (map_voxel_leaf_m_ > 0.0 ? map_voxel_leaf_m_ : 1.0);
+    map_normals_ =
+        std::make_shared<foray::localization_map::NormalCache>(map_.cloud, normal_cell, 6);
+    if (observability_ratio_threshold_ > 0.0) {
+        RCLCPP_INFO(get_logger(), "可观测性分析已启用: 阈值=%.3f 法向覆盖=%.1f%%",
+                    observability_ratio_threshold_, 100.0 * map_normals_->coverage());
+    }
     RCLCPP_INFO(get_logger(), "先验地图已加载: version=%s pcd=%zu grid=%dx%d",
                 map_.manifest.version.c_str(), map_.cloud.size(), map_.grid.width,
                 map_.grid.height);
@@ -164,13 +219,32 @@ void LocalizationNode::load_map() {
 
 void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud) {
     std::string error;
+    const auto profile_begin = std::chrono::steady_clock::now();
     foray::localization_map::PointCloud points = to_point_cloud(*cloud, &error);
     if (points.empty()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "丢弃无效点云: %s", error.c_str());
         return;
     }
+    // 先裁切再降采样：裁切是纯空间过滤，先做可以省掉后续降采样的点数（decision.md D23/D25）。
+    if (fov_horizontal_deg_ < 360.0 || fov_vertical_deg_ < 180.0) {
+        points = foray::localization_map::crop_by_fov(points, fov_horizontal_deg_,
+                                                      fov_vertical_deg_, fov_center_yaw_deg_);
+        if (points.empty()) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "视场裁切后点云为空 (h=%.1f v=%.1f yaw=%.1f)，检查 fov_* 参数",
+                                 fov_horizontal_deg_, fov_vertical_deg_, fov_center_yaw_deg_);
+            return;
+        }
+    }
+    if (profile_enabled_) {
+        profile_.to_pcl_ms += elapsed_ms(profile_begin);
+    }
+    const auto profile_voxel_begin = std::chrono::steady_clock::now();
     if (voxel_leaf_m_ > 0.0) {
         points = foray::localization_map::voxel_downsample(points, voxel_leaf_m_);
+    }
+    if (profile_enabled_) {
+        profile_.voxel_ms += elapsed_ms(profile_voxel_begin);
     }
 
     Eigen::Isometry3d base_from_cloud = Eigen::Isometry3d::Identity();
@@ -227,6 +301,10 @@ void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::ConstSharedPtr
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    // 两次配准之间协方差随时间长大：里程计外推越久，下一帧量测就该越被重视。
+    if (last_odom_ns_ > 0 && stamp_ns > last_odom_ns_) {
+        pose_filter_.predict(static_cast<double>(stamp_ns - last_odom_ns_) / 1e9);
+    }
     odom_to_base_ = odom_to_base;
     last_odom_ns_ = stamp_ns;
     has_odom_ = true;
@@ -269,6 +347,28 @@ void LocalizationNode::on_external_pose(
     health_status_ = health_.update(sample, stamp_ns, stamp_ns);
 }
 
+
+void LocalizationNode::maybe_flush_profile(std::int64_t now_ns) {
+    if (!profile_enabled_ || profile_.samples == 0) {
+        return;
+    }
+    if (profile_.window_start_ns == 0) {
+        profile_.window_start_ns = now_ns;
+        return;
+    }
+    // 5 s 一个统计窗口：太短会被单帧抖动带偏，太长看不出趋势（decision.md D25）。
+    constexpr std::int64_t kWindowNs = 5'000'000'000LL;
+    if (now_ns - profile_.window_start_ns < kWindowNs) {
+        return;
+    }
+    const double frames = static_cast<double>(profile_.samples);
+    const double seconds = static_cast<double>(now_ns - profile_.window_start_ns) / 1e9;
+    RCLCPP_INFO(get_logger(), "耗时窗口: to_pcl=%.2fms voxel=%.2fms align=%.2fms 帧数=%.0f 配准率=%.1fHz",
+                profile_.to_pcl_ms / frames, profile_.voxel_ms / frames,
+                profile_.align_ms / frames, frames, frames / seconds);
+    profile_ = ProfileTotals{};
+}
+
 void LocalizationNode::on_align_timer() {
     if (policy_ == foray::localization::PoseSourcePolicy::kExternal) {
         return;
@@ -278,6 +378,8 @@ void LocalizationNode::on_align_timer() {
     Eigen::Isometry3d guess = Eigen::Isometry3d::Identity();
     std::int64_t stamp_ns = 0;
     std::int64_t odom_ns = 0;
+    // 人工重定位注入的是完整先验位姿，此时不该做方向约束——用户明确要的就是这一帧的解。
+    bool relocalizing = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!has_map_ || !has_cloud_ || !has_odom_) {
@@ -288,12 +390,19 @@ void LocalizationNode::on_align_timer() {
         odom_ns = last_odom_ns_;
         if (relocalize_pending_.exchange(false)) {
             guess = pending_map_to_base_;
+            relocalizing = true;
         } else {
             guess = map_to_odom_ * odom_to_base_;
         }
     }
 
+    const auto profile_align_begin = std::chrono::steady_clock::now();
     const auto result = aligner_->align(cloud, map_.cloud, guess);
+    if (profile_enabled_) {
+        profile_.align_ms += elapsed_ms(profile_align_begin);
+        ++profile_.samples;
+        maybe_flush_profile(now().nanoseconds());
+    }
     // 配准失败（有效对应点不足 / 输入为空）时 inlier_ratio 为 0，健康状态会一路退到 LOST。
     // 这条日志是唯一能看出「为什么无效」的地方，不加就只能看到 registration rejected。
     if (result.inlier_ratio <= 0.0) {
@@ -303,6 +412,25 @@ void LocalizationNode::on_align_timer() {
                              result.iterations);
     }
 
+    // 可观测性分析（decision.md D23）：配准「收敛」不等于「被约束住」，
+    // 视野一裁就可能只剩两三个方向真有约束。这里在收敛位姿上建信息矩阵并做特征分解，
+    // 后面只把修正量投影到可观子空间，不可观方向继续由里程计外推承担。
+    foray::localization_map::ObservabilityReport observability;
+    const bool observability_enabled = observability_ratio_threshold_ > 0.0 && !relocalizing &&
+                                       map_index_ != nullptr && map_normals_ != nullptr &&
+                                       result.inlier_ratio > 0.0;
+    if (observability_enabled) {
+        observability = foray::localization_map::analyze_observability(
+            cloud, result.transform, *map_index_, *map_normals_, max_correspondence_distance_m_,
+            observability_ratio_threshold_);
+        if (observability.degenerate()) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                                 "配准退化: %d/6 个方向不可观 (condition=%.1f 点面约束=%zu)",
+                                 observability.unobservable_count, observability.condition_number,
+                                 observability.inlier_count);
+        }
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
     foray::localization::RegistrationSample sample;
     sample.stamp_ns = stamp_ns;
@@ -310,6 +438,9 @@ void LocalizationNode::on_align_timer() {
     sample.mean_residual_m = result.mean_residual_m;
     sample.inlier_ratio = result.inlier_ratio;
     sample.fitness = result.fitness;
+    sample.source_points = cloud.size();
+    sample.condition_number = observability_enabled ? observability.condition_number : 0.0;
+    sample.unobservable_count = observability_enabled ? observability.unobservable_count : 0;
     // 健康评估以当前时间进行：odom_ns 是最近一次里程计时间戳，更新快于点云，
     // 与点云时间戳相比会天然反序，若直接传入会误判为里程计断流。
     const std::int64_t eval_ns = now().nanoseconds();
@@ -318,8 +449,36 @@ void LocalizationNode::on_align_timer() {
     // LOST 粘滞：只有人工重定位 reset 后才重新接受配准结果。
     if (health_status_.state != foray::localization::HealthState::kLost &&
         result.inlier_ratio > 0.0) {
-        map_to_base_ = result.transform;
-        map_to_odom_ = map_to_base_ * odom_to_base_.inverse();
+        if (observability_enabled) {
+            // 左乘增量（map 系）：correction 只保留可观分量，不可观方向保持当前估计。
+            const Eigen::Isometry3d delta = result.transform * map_to_base_.inverse();
+            Eigen::Matrix<double, foray::localization_map::kDofCount, 1> delta_vector;
+            delta_vector.head<3>() = delta.translation();
+            const Eigen::AngleAxisd delta_rotation(delta.linear());
+            delta_vector.tail<3>() = delta_rotation.angle() * delta_rotation.axis();
+            const auto projected = foray::localization_map::project_delta_to_observable(
+                delta_vector, observability);
+            Eigen::Isometry3d correction = Eigen::Isometry3d::Identity();
+            correction.translation() = projected.head<3>();
+            const Eigen::Vector3d omega = projected.tail<3>();
+            const double angle = omega.norm();
+            if (angle > 1e-12) {
+                correction.linear() = Eigen::AngleAxisd(angle, omega / angle).toRotationMatrix();
+            }
+            map_to_base_ = correction * map_to_base_;
+        } else {
+            map_to_base_ = result.transform;
+        }
+        if (pose_filter_.enabled()) {
+            // 只平滑 map -> odom（D24）：量测由几何修正后的位姿换算而来，输出再与当前
+            // 里程计合回 map -> base，所以 TF 频率与坐标系语义都不变。
+            const Eigen::Isometry3d measurement = map_to_base_ * odom_to_base_.inverse();
+            map_to_odom_ = pose_filter_.update(
+                measurement, observability_enabled ? &observability.observable : nullptr);
+            map_to_base_ = map_to_odom_ * odom_to_base_;
+        } else {
+            map_to_odom_ = map_to_base_ * odom_to_base_.inverse();
+        }
         last_valid_ns_ = stamp_ns;
     }
     has_cloud_ = false;
@@ -450,6 +609,8 @@ void LocalizationNode::on_relocalize(
         health_status_.state = foray::localization::HealthState::kInitializing;
         map_to_base_ = initial;
         map_to_odom_ = initial * odom_to_base_.inverse();
+        // 硬切：重定位注入的是人工确认的位姿，滤波器必须整体重置而不是慢慢收敛。
+        pose_filter_.reset(map_to_odom_);
     }
     response->accepted = true;
     response->message = "已接受初始位姿，下一帧按该初值配准";

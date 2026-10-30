@@ -8,6 +8,7 @@
 
 #include "foray/localization/pose.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -42,6 +43,11 @@ struct HealthConfig {
     int recover_frames{3};
     /// 单帧残差/内点率越界后进入 DEGRADED 的保持时间（用于抑制抖动）。
     double degraded_hold_sec{0.0};
+    /// 单帧源点数下限。低于它时即使残差与内点率都合格，也不足以约束 6 个自由度
+    /// （decision.md D23）。0 表示不设下限，即保持改造前行为。
+    std::size_t min_source_points{0};
+    /// 允许的不可观自由度上限（0..6）。超过即降级。默认 6 表示不启用该项。
+    int max_unobservable_dofs{6};
 };
 
 /// 对外发布的状态快照。

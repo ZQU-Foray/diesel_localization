@@ -8,8 +8,10 @@
 
 #include "foray/localization/health.hpp"
 #include "foray/localization/pose.hpp"
+#include "foray/localization/pose_ekf.hpp"
 #include "foray/localization_map/aligner.hpp"
 #include "foray/localization_map/aligner_factory.hpp"
+#include "foray/localization_map/observability.hpp"
 #include "foray/localization_map/prior_map.hpp"
 #include "foray/localization_map/residual_clusterer.hpp"
 #include "foray_localization_ros/msg/dynamic_obstacle_array.hpp"
@@ -67,6 +69,27 @@ class LocalizationNode : public rclcpp::Node {
     double cluster_tolerance_m_{0.3};
     bool verify_map_hashes_{true};
     std::string pose_source_param_{"auto"};
+    /// 视场裁切（decision.md D23）。默认 360x180 = 不裁切，行为与改造前一致。
+    double fov_horizontal_deg_{360.0};
+    double fov_vertical_deg_{180.0};
+    double fov_center_yaw_deg_{0.0};
+    /// 归一化特征值阈值，兼作可观测性总开关：<= 0 表示不启用（默认）。
+    double observability_ratio_threshold_{0.0};
+    /// 配准对应距离上限，用于构建目标侧近邻索引与可观测性分析。
+    double max_correspondence_distance_m_{0.5};
+
+    /// 分段耗时累加器（decision.md D25）。profile_enabled 为 false 时只多一次判空。
+    struct ProfileTotals {
+        double to_pcl_ms{0.0};
+        double voxel_ms{0.0};
+        double align_ms{0.0};
+        std::size_t samples{0};
+        std::int64_t window_start_ns{0};
+    };
+    bool profile_enabled_{false};
+    ProfileTotals profile_;
+
+    void maybe_flush_profile(std::int64_t now_ns);
 
     rclcpp::Publisher<foray_localization_ros::msg::LocalizationState>::SharedPtr state_pub_;
     rclcpp::Publisher<foray_localization_ros::msg::MapMeta>::SharedPtr map_meta_pub_;
@@ -88,10 +111,16 @@ class LocalizationNode : public rclcpp::Node {
 
     foray::localization_map::PriorMap map_;
     bool has_map_{false};
+    /// 目标侧近邻索引与法向缓存，随地图生命周期只建一次（decision.md D25）。
+    /// 两者都持有 `map_.cloud` 的引用，必须在 `map_` 之后声明、在 relocad 时整体重建。
+    std::shared_ptr<foray::localization_map::PointCloudIndex> map_index_;
+    std::shared_ptr<foray::localization_map::NormalCache> map_normals_;
     /// 配准后端由工厂按编译期开关构造（decision.md D21），节点不关心具体实现。
     std::unique_ptr<foray::localization_map::Aligner> aligner_;
     foray::localization_map::ResidualClusterer clusterer_;
     foray::localization::HealthMonitor health_;
+    /// 融合层滤波（decision.md D24）。默认关闭，关闭时位姿更新与改造前完全一致。
+    foray::localization::PoseEkf pose_filter_;
     foray::localization::HealthConfig health_config_;
     foray::localization::PoseSourcePolicy policy_{foray::localization::PoseSourcePolicy::kAuto};
     foray::localization::PoseSource active_source_{foray::localization::PoseSource::kUnknown};

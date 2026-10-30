@@ -140,8 +140,14 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
     const bool valid = sample.valid && sample.stamp_ns > 0;
     if (valid) {
         last_valid_ns_ = std::max(last_valid_ns_, sample.stamp_ns);
+        // 点数与可观性是「残差/IPR 之外」的两条独立降级理由（decision.md D23）：
+        // 残差小只说明对上的点贴得紧，不说明这些点在几何上约束住了 6 个自由度。
+        const bool points_ok = config_.min_source_points == 0 ||
+                               sample.source_points >= config_.min_source_points;
+        const bool observable_ok = sample.unobservable_count <= config_.max_unobservable_dofs;
         const bool good = sample.mean_residual_m <= config_.ok_mean_residual_m &&
-                          sample.inlier_ratio >= config_.ok_inlier_ratio;
+                          sample.inlier_ratio >= config_.ok_inlier_ratio && points_ok &&
+                          observable_ok;
         const bool degraded_ok = sample.mean_residual_m <= config_.degraded_mean_residual_m &&
                                  sample.inlier_ratio >= config_.degraded_inlier_ratio;
 
@@ -168,8 +174,11 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
                 if (!degraded_ok && std::isfinite(bad_age) && bad_age >= config_.lost_timeout_sec) {
                     transition(HealthState::kLost, "registration quality lost", now_ns);
                 } else if (bad_age >= config_.degraded_hold_sec) {
-                    transition(HealthState::kDegraded, "residual or inlier ratio out of bounds",
-                               now_ns);
+                    // 降级理由要能直接指向原因：现场只看到「degraded」是排查不了的。
+                    const char* why = !points_ok        ? "insufficient source points"
+                                      : !observable_ok  ? "insufficient observability"
+                                                        : "residual or inlier ratio out of bounds";
+                    transition(HealthState::kDegraded, why, now_ns);
                 }
             }
         } else if (state_ == HealthState::kDegraded) {

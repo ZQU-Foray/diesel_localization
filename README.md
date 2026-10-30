@@ -70,7 +70,18 @@ MID360 点云 ──► point_lio（仅里程计）──► T_odom_lidar
   `-DFORAY_WITH_PCL=OFF` 时退回内置点到点 ICP（精度较低，仅用于无 PCL 环境与降级排查）。
 - **融合**：`foray_localization_ros` 由 `T_map_lidar` 与 `T_odom_lidar` 合成
   `map → odom`，以 20 Hz 发布；`LocalizationState` 以 50 Hz 发布。
+- **位姿滤波**：融合层对 `map → odom` 做 EKF（`decision.md` D24）。配准是 5 Hz 的离散量测，
+  两次量测之间的 200 ms 全靠里程计外推；不滤波时每次配准都会让 `map → odom` 阶跃跳变。
+  滤波器以「`map → odom` 在两次配准之间应保持常数」为预测模型，量测噪声按残差与各方向可观性
+  **逐方向**放大。TF 与 `LocalizationState` 的频率、坐标系均不变，下游无感；
+  可整体关闭退回直通（逃生口见 `decision.md` D24）。
+- **可观测性与裁切**：定位必须在**视野被裁**时仍可用——既包括传感器视场受限、遮挡造成的被动
+  裁切，也包括为省算力主动做的 ROI / FOV 裁切。配准是否可信不能用单一阈值概括：
+  `foray_localization_map` 在配准收敛位姿上建立**点面残差信息矩阵**（6×6），特征分解得到各
+  自由度的可观性，把不可观方向显式上报，并**只在可观方向上**接受配准修正（`decision.md` D23）；
+  不可观方向的位姿由里程计外推承担，不被退化解拉走。
 - **健康**：状态机 `INITIALIZING → OK ⇄ DEGRADED → LOST`，失效显式上报，**禁止静默外推**。
+  退化（输入点数不足、可观性不足）是显式降级理由，不是沉默接受的理由。
 - **重定位**：启动时 `map → odom` 取单位阵（出生点即 `map` 原点，`odom` 与 `map` 重合）；
   丢失后调用 `/localization/relocalize`（`MODE_GEOMETRIC` + `map → base_frame` 初值）注入，
   状态机回到 `INITIALIZING` 直到收敛。自动全局重定位（ONNX Scan Context）为可选 P2，默认关闭。
@@ -156,6 +167,16 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `recover_frames` | `3` | `DEGRADED → OK` 所需连续好帧数 |
 | `align_max_iterations` | `10` | 配准后端（默认 PCL GICP）最大迭代次数 |
 | `align_max_correspondence_m` | `0.5` | 配准后端最大对应点距离（m） |
+| `fov_horizontal_deg` | `360.0` | 水平视场开口角（度）。`360` 表示不裁切；小于 `360` 时按 `base_frame` 前向为 0° 裁切点云后再配准（见 `decision.md` D23） |
+| `fov_vertical_deg` | `180.0` | 垂直视场开口角（度）。`180` 表示不裁切 |
+| `fov_center_yaw_deg` | `0.0` | 视场中心相对 `base_frame` 前向的偏航（度），用于把裁切窗口转向感兴趣方向 |
+| `observability_ratio_threshold` | `0.0` | 点面残差信息矩阵归一化特征值阈值，兼作可观测性总开关。`0` 表示不启用方向约束（行为与改造前一致） |
+| `min_source_points` | `0` | 单帧源点数下限，低于即降级为 `DEGRADED(insufficient source points)`。`0` 表示不设下限 |
+| `max_unobservable_dofs` | `6` | 允许的不可观自由度上限（0..6），超过即降级为 `DEGRADED(insufficient observability)`。`6` 表示不启用 |
+| `profile_enabled` | `false` | 分段耗时统计开关：每 5 s 打印一行 `to_pcl / voxel / align` 平均耗时与配准率。默认关，关闭时只有一次判空开销（`decision.md` D25） |
+| `filter_enabled` | `false` | 融合层 6 维 EKF 开关。`false` 时位姿更新与未引入滤波时逐字节一致（见 `decision.md` D24） |
+| `filter_measurement_noise_m` | `0.05` | EKF 平移量测噪声标准差（m）。默认取 0.25 m 体素先验图静止配准误差的实测值（D22/D26） |
+| `filter_unobservable_noise_scale` | `10.0` | EKF 对不可观方向的量测噪声倍数（标准差倍数）。取 10 表示该方向仅约 1 % 权重 |
 | `min_cluster_size` | `5` | 有效残差簇的最小点数 |
 | `max_cluster_size` | `500` | 有效残差簇的最大点数（更大视为地图差异） |
 | `state_rate_hz` | `50.0` | `LocalizationState` 发布频率（Hz） |
