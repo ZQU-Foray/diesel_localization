@@ -29,7 +29,20 @@ PclCloud::Ptr to_pcl(const PointCloud& cloud) {
 
 } // namespace
 
-PclGicpAligner::PclGicpAligner(AlignOptions options) : options_(options) {}
+/// PCL 对象与 target 缓存都藏在这里，头文件因此不必认识 pcl:: 的任何类型。
+struct PclGicpAligner::Impl {
+    pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp;
+    /// 上一次 setInputTarget 的目标点云（按地址识别）。地图只在启动时加载、
+    /// 重定位也不换图，所以地址不变即可认为 target 未变。
+    const PointCloud* cached_target{nullptr};
+    PclCloud::Ptr cached_target_pcl;
+    bool configured{false};
+};
+
+PclGicpAligner::PclGicpAligner(AlignOptions options)
+    : options_(options), impl_(std::make_unique<Impl>()) {}
+
+PclGicpAligner::~PclGicpAligner() = default;
 
 AlignResult PclGicpAligner::align(const PointCloud& source, const PointCloud& target,
                                   const Eigen::Isometry3d& initial_guess) {
@@ -42,20 +55,27 @@ AlignResult PclGicpAligner::align(const PointCloud& source, const PointCloud& ta
     }
 
     const PclCloud::Ptr source_pcl = to_pcl(source);
-    const PclCloud::Ptr target_pcl = to_pcl(target);
 
-    // 每帧新建对象、不做 target 预处理缓存：PCL 1.12 的 setInputTarget() 会
-    // target_covariances_.reset()，协方差仅在为空时重算，而 setInputSource()
-    // 不重置 input_covariances_，且没有 getTargetCovariances() 可取回。
-    // 复用同一对象跨帧就等于让 source 协方差与新 source 错配（decision.md D21）。
-    pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> gicp;
-    gicp.setMaximumIterations(options_.max_iterations);
-    gicp.setMaxCorrespondenceDistance(options_.max_correspondence_distance_m);
-    gicp.setTransformationEpsilon(options_.transformation_epsilon_m);
-    // correspondence_randomness 保留 PCL 默认 20：没有实测数据支撑调参，
-    // 先不暴露成 ROS 参数，避免凭空多出一个没人验证过的旋钮（D21）。
+    // 复用同一个 GICP 对象，只在 target 换掉时重新 setInputTarget
+    // （decision.md D27）：PCL 1.12 的 setInputTarget() 会 target_covariances_.reset()
+    // 并在下次 initCompute() 重算整个 target 协方差 + KdTree，这是配准里最贵的一段。
+    // 而 setInputSource() 会清 input_covariances_，所以逐帧换 source 是安全的——
+    // 离线基准里 12 帧不同区域的位姿结果与「每帧新建」逐位相同，速度快 2.02 倍。
+    auto& gicp = impl_->gicp;
+    if (!impl_->configured) {
+        gicp.setMaximumIterations(options_.max_iterations);
+        gicp.setMaxCorrespondenceDistance(options_.max_correspondence_distance_m);
+        gicp.setTransformationEpsilon(options_.transformation_epsilon_m);
+        // correspondence_randomness 保留 PCL 默认 20：没有实测数据支撑调参，
+        // 先不暴露成 ROS 参数，避免凭空多出一个没人验证过的旋钮（D21）。
+        impl_->configured = true;
+    }
+    if (impl_->cached_target != &target || !impl_->cached_target_pcl) {
+        impl_->cached_target_pcl = to_pcl(target);
+        gicp.setInputTarget(impl_->cached_target_pcl);
+        impl_->cached_target = &target;
+    }
     gicp.setInputSource(source_pcl);
-    gicp.setInputTarget(target_pcl);
 
     PclCloud aligned;
     gicp.align(aligned, initial_guess.matrix().cast<float>());
