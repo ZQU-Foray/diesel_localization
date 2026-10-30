@@ -30,6 +30,7 @@ add_library(${PROJECT_NAME} SHARED
     src/prior_map.cpp
     src/icp_aligner.cpp
     src/residual_clusterer.cpp
+    src/observability.cpp
     ${_foray_map_alignment_sources}
 )
 add_library(foray_localization::map ALIAS ${PROJECT_NAME})
@@ -127,6 +128,7 @@ foray_add_test(test_grid_map test/test_grid_map.cpp)
 foray_add_test(test_prior_map test/test_prior_map.cpp)
 foray_add_test(test_icp test/test_icp.cpp)
 foray_add_test(test_residual_clusterer test/test_residual_clusterer.cpp)
+foray_add_test(test_observability test/test_observability.cpp)
 if(FORAY_WITH_PCL)
     foray_add_test(test_pcl_gicp test/test_pcl_gicp.cpp)
 endif()

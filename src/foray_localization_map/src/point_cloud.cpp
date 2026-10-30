@@ -2,6 +2,7 @@
 
 #include "foray/localization_map/point_cloud.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
@@ -77,6 +78,58 @@ PointCloud transform_points(const PointCloud& cloud, const Eigen::Isometry3d& tr
         transformed.points.push_back((transform * point.cast<double>()).cast<float>());
     }
     return transformed;
+}
+
+PointCloud crop_by_fov(const PointCloud& cloud, double horizontal_deg, double vertical_deg,
+                       double center_yaw_deg) {
+    const bool full_horizontal = horizontal_deg >= 360.0;
+    const bool full_vertical = vertical_deg >= 180.0;
+    if ((full_horizontal && full_vertical) || cloud.points.empty()) {
+        return cloud;
+    }
+
+    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kDegToRad = kPi / 180.0;
+    // 张角的一半：把「总开口角」换算成「偏离中心的最大角差」。
+    const double half_horizontal = 0.5 * std::clamp(horizontal_deg, 0.0, 360.0) * kDegToRad;
+    const double half_vertical = 0.5 * std::clamp(vertical_deg, 0.0, 180.0) * kDegToRad;
+    // 中心方位归一化到 (-pi, pi]，与 atan2 的值域对齐，免得跨 ±180 度时判反。
+    double center = std::fmod(center_yaw_deg * kDegToRad, 2.0 * kPi);
+    if (center > kPi) {
+        center -= 2.0 * kPi;
+    } else if (center <= -kPi) {
+        center += 2.0 * kPi;
+    }
+
+    PointCloud cropped;
+    cropped.points.reserve(cloud.points.size());
+    for (const Eigen::Vector3f& point : cloud.points) {
+        if (!point.allFinite()) {
+            continue;
+        }
+        const double planar_range =
+            std::sqrt(static_cast<double>(point.x()) * point.x() +
+                      static_cast<double>(point.y()) * point.y());
+        // 竖直方向（±z 轴附近）的点水平方位无定义，只按垂直张角判定。
+        if (planar_range > 1e-6) {
+            double yaw = std::atan2(static_cast<double>(point.y()), static_cast<double>(point.x()));
+            double delta = yaw - center;
+            if (delta > kPi) {
+                delta -= 2.0 * kPi;
+            } else if (delta <= -kPi) {
+                delta += 2.0 * kPi;
+            }
+            if (std::abs(delta) > half_horizontal) {
+                continue;
+            }
+        }
+        const double pitch = std::atan2(static_cast<double>(point.z()), planar_range);
+        if (std::abs(pitch) > half_vertical) {
+            continue;
+        }
+        cropped.points.push_back(point);
+    }
+    return cropped;
 }
 
 } // namespace foray::localization_map

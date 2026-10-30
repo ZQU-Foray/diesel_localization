@@ -41,6 +41,9 @@ class PointCloudIndex {
     bool nearest(const Eigen::Vector3f& query, double max_distance_m, std::uint32_t* index_out,
                  double* distance_out) const;
 
+    /// 被索引的点云。可观测性分析需要按下标取回目标点坐标来算点面残差（decision.md D23）。
+    const PointCloud& cloud() const { return cloud_; }
+
   private:
     struct CellKey {
         std::int32_t x{0};
