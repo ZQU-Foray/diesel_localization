@@ -38,6 +38,24 @@
   `check_contracts` / `check_params` / `check_tree_doc`）、`contracts.sha256` 接口快照、
   CI 四个作业（`file-hygiene` / `doc-sync` / `param-contract` / `contract-lock`），
   `tree.md` 双向一致（见 `decision.md` D18）
+- [ ] **M9 小 FOV 可观测性定位 · EKF 融合 · 性能**（`decision.md` D23/D24/D25）——进行中
+  - [x] **i1 需求入档**：README「定位方案」补齐「位姿滤波」「可观测性与裁切」两节；
+    `decision.md` 新增 D23（可观测性与方向约束）、D24（融合层 EKF）、D25（性能与可选后端）
+  - [x] **i2 可观测性基础设施**：点面残差 6×6 信息矩阵、特征分解、不可观方向标签化、
+    target 法向与点云索引随地图生命周期缓存
+  - [x] **i3 FOV 裁切与方向约束**：`crop_by_fov`、修正量投影到可观子空间、健康契约增加
+    「输入点数不足」「可观性不足」两条显式降级判据
+  - [x] **i4 FOV 极限扫描实验**：静止条件下扫 360/180/120/90/60/45/30 度共九组，
+    全部 `100% OK`、误差 0.04–0.12 m（A2 判据 0.30 m）；方向约束只在 60° 及以下有收益
+    （0.118 → 0.066），120° 反而劣化。结论见 `decision.md` D26
+  - [ ] **i5 EKF 融合层**：常值预测、按可观性逐方向放大量测噪声、重定位硬切与重置、
+    `filter_enabled: false` 时与改造前逐字节等价的直通路径
+  - [x] **i6 性能零依赖优化**：逆矩阵缓存、`PointCloudIndex` 与 target 法向复用、
+    `setInputTarget` 跨帧复用可行性验证；逐项独立提交并给分段耗时表
+  - [x] **i7 可选 small_gicp 后端评估**：`FORAY_WITH_SMALL_GICP`（默认 OFF），
+    实测提速 < 15% 则不引入
+  - [ ] **i8 GUI 审查产物**：补 `odom → base_footprint` 后尝试 RViz；不可用则交付
+    monitor 四联图 + 自包含 HTML 报告
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 
 ## 当前 Agent State
@@ -66,8 +84,9 @@ M5b 的承接方 `foray_simulation` 已建成并取证（首次 `OK` 3.78 s、�
 ## 模糊点与待确认项
 
 - `foray_interfaces` 的 0.2.0 消息尚未落地；首版消息暂放 `foray_localization_ros`，迁移计划见 `decision.md` D8
-- `small_gicp` 不再计划：PCL GICP 已经是默认后端（`decision.md` D21），要继续替换得另立决策；
-  `decision.md` D9 里「首版用 PCL GICP + 内置 ICP 兜底」的设想已在 D21 落地
+- `small_gicp` 由 `decision.md` **D25 立为可选的编译期后端评估**（`FORAY_WITH_SMALL_GICP`，
+  默认 OFF，实测提速 < 15% 则不引入）——此前「不再计划」的表述已作废；PCL GICP 仍是默认后端
+  （`decision.md` D21），`D9` 里「首版用 PCL GICP + 内置 ICP 兜底」的设想已在 D21 落地
 - `bringup/config/heavy.yaml` 对应装甲兵种，不在 2027 3v3 阵容（步兵×2 + 哨兵×1，
   见 `foray_docs/algorithm_structure.md` §12）；保留为预留配置，不参与验收
 - 2027 场地地图需赛前场地窗口实测；当前以录制包回放验证（无实车，M5 未完成）

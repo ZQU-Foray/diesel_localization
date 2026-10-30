@@ -62,16 +62,19 @@
 │   │   │   ├── health.hpp             健康状态机与位姿源仲裁
 │   │   │   ├── manifest.hpp           地图 manifest 解析/校验
 │   │   │   ├── pose.hpp               Pose3D / RegistrationSample 等值类型
+│   │   │   ├── pose_ekf.hpp           融合层 6 维误差状态 EKF
 │   │   │   └── sha256.hpp             文件/内存 sha256（地图完整性校验）
 │   │   ├── src/
 │   │   │   ├── geometry.cpp
 │   │   │   ├── health.cpp
 │   │   │   ├── manifest.cpp
+│   │   │   ├── pose_ekf.cpp
 │   │   │   └── sha256.cpp
 │   │   └── test/
 │   │       ├── test_geometry.cpp
 │   │       ├── test_health.cpp
 │   │       ├── test_manifest.cpp
+│   │       ├── test_pose_ekf.cpp
 │   │       └── test_sha256.cpp
 │   │
 │   ├── foray_localization_map/         L3 地图与配准，无 ROS
@@ -84,6 +87,7 @@
 │   │   │   ├── alignment_metrics.hpp  共享配准质量口径 + 体素近邻索引
 │   │   │   ├── grid_map.hpp           PGM 读取 + 2D 占据栅格查询
 │   │   │   ├── icp_aligner.hpp        内置点到点 ICP 后端（PCL 关闭时的兜底）
+│   │   │   ├── observability.hpp      点面残差可观测性 + 目标点云法向缓存
 │   │   │   ├── pcd_loader.hpp         PCD（ascii/binary）读取
 │   │   │   ├── pcl_gicp_aligner.hpp   PCL GICP 后端（默认，仅 ON 时编译）
 │   │   │   ├── point_cloud.hpp        PointCloud 容器/体素降采样/变换
@@ -94,6 +98,7 @@
 │   │   │   ├── alignment_metrics.cpp
 │   │   │   ├── grid_map.cpp
 │   │   │   ├── icp_aligner.cpp
+│   │   │   ├── observability.cpp
 │   │   │   ├── pcd_loader.cpp
 │   │   │   ├── pcl_gicp_aligner.cpp   仅 FORAY_WITH_PCL=ON 时参与编译
 │   │   │   ├── point_cloud.cpp
@@ -102,6 +107,7 @@
 │   │   └── test/
 │   │       ├── test_grid_map.cpp
 │   │       ├── test_icp.cpp
+│   │       ├── test_observability.cpp
 │   │       ├── test_pcd_loader.cpp
 │   │       ├── test_pcl_gicp.cpp      仅 FORAY_WITH_PCL=ON 时注册
 │   │       ├── test_point_cloud.cpp
