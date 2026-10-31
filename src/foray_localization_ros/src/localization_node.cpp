@@ -496,6 +496,10 @@ void LocalizationNode::on_align_timer() {
 
     foray::localization_map::PointCloud cloud;
     Eigen::Isometry3d guess = Eigen::Isometry3d::Identity();
+    // 与点云同一时刻的 `odom → base`（decision.md D40）：配准用的是这一帧点云，
+    // 量测换算必须用「那一刻」的里程计。父提交在第二次加锁时才读 odom_to_base_，
+    // 拿的是配准结束（100–200 ms 后）的值，于是每一次配准都把 v·Δ 记进 map → odom。
+    Eigen::Isometry3d odom_to_base_at_cloud = Eigen::Isometry3d::Identity();
     std::int64_t stamp_ns = 0;
     std::int64_t odom_ns = 0;
     // 人工重定位注入的是完整先验位姿，此时不该做方向约束——用户明确要的就是这一帧的解。
@@ -508,11 +512,12 @@ void LocalizationNode::on_align_timer() {
         cloud = latest_cloud_;
         stamp_ns = latest_cloud_stamp_ns_;
         odom_ns = last_odom_ns_;
+        odom_to_base_at_cloud = odom_to_base_;
         if (relocalize_pending_.exchange(false)) {
             guess = pending_map_to_base_;
             relocalizing = true;
         } else {
-            guess = map_to_odom_ * odom_to_base_;
+            guess = map_to_odom_ * odom_to_base_at_cloud;
         }
     }
 
@@ -599,12 +604,12 @@ void LocalizationNode::on_align_timer() {
         if (pose_filter_.enabled()) {
             // 只平滑 map -> odom（D24）：量测由几何修正后的位姿换算而来，输出再与当前
             // 里程计合回 map -> base，所以 TF 频率与坐标系语义都不变。
-            const Eigen::Isometry3d measurement = map_to_base_ * odom_to_base_.inverse();
+            const Eigen::Isometry3d measurement = map_to_base_ * odom_to_base_at_cloud.inverse();
             map_to_odom_ = pose_filter_.update(
                 measurement, observability_enabled ? &observability.observable : nullptr);
-            map_to_base_ = map_to_odom_ * odom_to_base_;
+            map_to_base_ = map_to_odom_ * odom_to_base_at_cloud;
         } else {
-            map_to_odom_ = map_to_base_ * odom_to_base_.inverse();
+            map_to_odom_ = map_to_base_ * odom_to_base_at_cloud.inverse();
         }
         last_valid_ns_ = stamp_ns;
     }

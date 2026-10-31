@@ -70,6 +70,9 @@
       （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
       上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
       `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
+    - [x] **L9 配准量测时刻对齐**（`decision.md` D40）：锁内快照 `odom_to_base_at_cloud`，
+      量测换算不再读配准结束时的里程计。`MapToOdomJitterUnderConstantVelocity`（1 m/s、
+      200 ms 后端、8 s/20 次配准）`map → odom` 极差父提交 3.2110 m、本提交 0.0000 m。
     - [x] **L5 参数声明顺序**（`decision.md` D39）：`min_source_points` /
       `max_unobservable_dofs` 的 declare 移到 `HealthMonitor` 构造之前。集成用例
       `MinSourcePointsParameterTakesEffect`：250 点进 `OK`、降到 30 点落

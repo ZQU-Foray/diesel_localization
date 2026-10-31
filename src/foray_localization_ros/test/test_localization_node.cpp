@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -296,6 +297,38 @@ TEST(LocalizationNodeTest, MinSourcePointsParameterTakesEffect) {
                 state.pose_valid ? 1 : 0, state.reason.c_str());
     EXPECT_EQ(state.state, LocalizationState::STATE_DEGRADED);
     EXPECT_EQ(state.reason, "insufficient source points");
+}
+
+/// L9 用例：1 m/s 匀速直线时 `map → odom` 必须是一条水平线。
+/// 父提交在配准结束（此处 200 ms 后）才读 odom_to_base_，于是每一次配准都把 v·Δ
+/// 记进 `map → odom`，40 次配准能漂出几米；本提交锁内快照后应当保持在毫米级。
+TEST(LocalizationNodeTest, MapToOdomJitterUnderConstantVelocity) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 200ms);
+
+    std::vector<double> map_to_odom_x;
+    harness.drive(std::chrono::milliseconds(8000), 20ms,
+                  [&harness, &map_to_odom_x](std::int64_t elapsed_ms) {
+                      // 1 m/s 匀速：odom → base 的 x 直接等于经过的秒数。
+                      harness.publish_odom(0.001 * static_cast<double>(elapsed_ms), 0.0);
+                      if (elapsed_ms % 100 < 20) {
+                          harness.publish_cloud(10);
+                      }
+                      geometry_msgs::msg::TransformStamped transform;
+                      if (harness.lookup_map_to_odom(&transform)) {
+                          map_to_odom_x.push_back(transform.transform.translation.x);
+                      }
+                  });
+
+    ASSERT_GE(map_to_odom_x.size(), 20U) << "没有采到足够多的 map → odom 样本";
+    const auto bounds = std::minmax_element(map_to_odom_x.begin(), map_to_odom_x.end());
+    const double spread = *bounds.second - *bounds.first;
+    const auto registrations = harness.diagnostics().align_runs;
+    std::printf("L9 回执: samples=%zu align_runs=%llu map_to_odom x=[%.4f, %.4f] 极差=%.4fm\n",
+                map_to_odom_x.size(), static_cast<unsigned long long>(registrations), *bounds.first,
+                *bounds.second, spread);
+    EXPECT_GE(registrations, 15U) << "配准次数太少，样本不足以下结论";
+    EXPECT_LT(spread, 0.005) << "map → odom 在匀速直行时被配准时刻差拉出了漂移";
 }
 
 } // namespace

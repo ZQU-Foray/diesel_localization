@@ -1285,3 +1285,33 @@ Consequences:
   这条约束写在参数块注释里，不靠记忆。
 
 状态：已实现（2026-10-31）。
+
+## D40 配准量测用「点云那一刻」的里程计，不是「配准结束时」的里程计
+
+Context: `map → odom` 的量测是 `T(map←base) · T(odom←base)⁻¹`，其中 `T(map←base)` 来自
+GICP、`T(odom←base)` 来自里程计。父提交在 `on_align_timer()` 里分两次加锁：第一次取点云、
+时间戳与 `guess`（用的是当时的 `odom_to_base_`），**放锁跑配准**（100–200 ms），第二次加锁
+之后才读 `odom_to_base_` 计算量测。于是同一个量测式里，分子是 `t0` 时刻的几何结果，分母是
+`t1 = t0 + Δ` 时刻的里程计。1 m/s、Δ=160 ms 时每一次配准都往 `map → odom` 里记进
+v·Δ ≈ 16 cm 的假位移，而且是累积的：实测 20 次配准把 `map → odom` 拉出 3.2 m。
+
+Decision: 第一次加锁时把 `odom_to_base_` 一并快照成 `odom_to_base_at_cloud`，`guess`、
+量测换算与「再合回 `map → base`」三处都用这个快照；第二次加锁不再读 `odom_to_base_`。
+改的是两行读取点，判据是「同一个量测式里的两个量必须属于同一时刻」。
+
+Reason: 这是纯时刻错位，不是精度问题。任何「配准耗时」都会被原样记成 `map → odom` 的
+位移，配准越慢、车速越快，漂得越狠——而慢配准本身在 L1 里已经证明是常态（200 ms）。
+
+Alternatives: ①把 `odom_to_base_` 按点云 stamp 插值；②配准期间阻塞 odom 回调。
+Rejected: ①需要里程计历史缓冲，而点云与 odom 的时间差已被 L1 压到 12 ms 量级，插值带来的
+收益远小于它引入的状态；②那就是父提交的病本身（单线程 + 200 Hz 回调被挡）。
+
+Consequences:
+- `test_localization_node` 的 `MapToOdomJitterUnderConstantVelocity`（1 m/s、注入 200 ms
+  后端、8 s、20 次配准）把 `map → odom` 的极差钉死：父提交 3.2110 m（`[-3.7990, -0.5880]`），
+  本提交 0.0000 m。
+- 量测与 `guess` 现在严格同源，EKF 的 `predict` 与 `update` 不再混用两个时刻的里程计。
+- 残留误差只剩「点云 stamp 与最近一帧 odom 的间隔」（≤ 5 ms，见 L1 的 `max_odom_lag_sec`），
+  属于传感器时间戳对齐范畴，不再是本节点的逻辑错误。
+
+状态：已实现（2026-10-31）。
