@@ -70,6 +70,11 @@
       （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
       上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
       `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
+    - [x] **L4 位姿源仲裁接线**（`decision.md` D38）：`select_pose_source()` 每拍重算，
+      `auto` 只在雷达断流时接受外部位姿；外部位姿不再伪造 `inlier_ratio=1.0`（改由
+      `has_registration_quality=false` 走「只判新鲜度」路径）。三条集成用例在父提交上
+      全红（`source=2, x=5.000` / `state=DEGRADED` 未接管 / 恢复后仍 `source=2`），
+      现为 `source=1 x=0.000` / `source=2 x=5.000 state=OK` / `source=1`。
     - [x] **L3 里程计子帧与外参换算**（`decision.md` D37）：`Odometry.pose` 按
       `odom → child_frame_id` 解释，`child != base` 时用 TF 补 `T(base←child)` 并取逆乘进去。
       `test_localization_node` 两条用例：0.11 m 外参 → state x=0.890（父提交 1.000）；

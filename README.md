@@ -120,6 +120,11 @@ CI 的 `dir-layout` 作业按同一规则校验。
 `/aft_mapped_to_init` 的 `pose` 是 `odom → child_frame_id`：`child_frame_id` 等于
 `base_frame` 时直接使用，否则按 TF 把安装外参换算进来（`decision.md` D37）；查不到 TF
 就丢这一帧，不会拿单位阵冒充。
+
+`/localization/external_pose` 是 `map → base_frame` 的量测，与配准结果同类：`pose_source`
+为 `external` 时无条件采用；为 `auto` 时**只在雷达位姿断流超过 `lidar_timeout_sec` 期间**采用，
+雷达恢复后位姿源自动翻回雷达（`decision.md` D38）。外部位姿没有可测的配准质量，
+所以它不参与残差/内点率判据，健康状态只判它是否新鲜。
 | 输出 | `/localization/state` | `foray_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
 | 输出 | `/localization/map_meta` | `foray_localization_ros/MapMeta` | transient_local / 1 Hz |
 | 输出 | `/localization/dynamic_obstacles` | `foray_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
@@ -241,6 +246,9 @@ source: "RMUL 2027 field survey"
 `LOST` 的 `reason` 区分三种成因：`no odometry received`（从未收到里程计）、
 `odometry stale: <age>s (no samples)`（真的没有新帧）、
 `odometry stale: <age>s (processing backlog <lag>s)`（帧在队列里积压，即本节点处理不及）。
+
+`DEGRADED`/`OK` 的残差与内点率判据只适用于带配准质量的位姿源；外部位姿没有可测质量，
+在有外部位姿的配置里健康状态只判新鲜度，`confidence` 按状态给 0.5/1.0（`decision.md` D38）。
 
 地图不可用是 `LOST` 的另一条成因：`map_manifest` 未设置、sha256 校验失败、点数超限或
 加载异常，都会把状态锁进 `LOST`，reason 以 `map unavailable:` 开头。此时 `map → odom`

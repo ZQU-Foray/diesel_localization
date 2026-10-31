@@ -126,6 +126,11 @@ double HealthMonitor::compute_confidence(const RegistrationSample& sample) const
         return 0.0;
     }
 
+    if (!sample.has_registration_quality) {
+        // 质量不可测：置信度只表达「这一拍有位姿」，DEGRADED 与其它路径一样打对折。
+        return state_ == HealthState::kDegraded ? 0.5 : 1.0;
+    }
+
     const double denominator = std::max(2.0 * config_.degraded_mean_residual_m, 1e-6);
     const double residual_term = 1.0 - clamp01(sample.mean_residual_m / denominator);
     double confidence = clamp01(sample.inlier_ratio) * residual_term;
@@ -175,14 +180,20 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
         last_valid_ns_ = std::max(last_valid_ns_, sample.stamp_ns);
         // 点数与可观性是「残差/IPR 之外」的两条独立降级理由（decision.md D23）：
         // 残差小只说明对上的点贴得紧，不说明这些点在几何上约束住了 6 个自由度。
-        const bool points_ok = config_.min_source_points == 0 ||
+        // 不带配准质量的位姿源（外部位姿）：只剩「新鲜」这一条判据，质量判据一律不参与。
+        // 这不是放宽，而是承认「本样本没有可测的质量」——父提交的做法是把 inlier_ratio
+        // 硬写成 1.0，等于伪造一份满分质检报告（D38）。
+        const bool quality_known = sample.has_registration_quality;
+        const bool points_ok = !quality_known || config_.min_source_points == 0 ||
                                sample.source_points >= config_.min_source_points;
-        const bool observable_ok = sample.unobservable_count <= config_.max_unobservable_dofs;
-        const bool good = sample.mean_residual_m <= config_.ok_mean_residual_m &&
-                          sample.inlier_ratio >= config_.ok_inlier_ratio && points_ok &&
-                          observable_ok;
-        const bool degraded_ok = sample.mean_residual_m <= config_.degraded_mean_residual_m &&
-                                 sample.inlier_ratio >= config_.degraded_inlier_ratio;
+        const bool observable_ok =
+            !quality_known || sample.unobservable_count <= config_.max_unobservable_dofs;
+        const bool good = !quality_known || (sample.mean_residual_m <= config_.ok_mean_residual_m &&
+                                             sample.inlier_ratio >= config_.ok_inlier_ratio &&
+                                             points_ok && observable_ok);
+        const bool degraded_ok =
+            !quality_known || (sample.mean_residual_m <= config_.degraded_mean_residual_m &&
+                               sample.inlier_ratio >= config_.degraded_inlier_ratio);
 
         if (good) {
             ++good_frames_;

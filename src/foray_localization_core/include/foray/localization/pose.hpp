@@ -62,6 +62,9 @@ struct RegistrationSample {
     double condition_number{0.0};
     /// 不可观的自由度个数（0..6）。大于 0 表示这一帧只约束了一部分方向。
     int unobservable_count{0};
+    /// 本样本是否带「配准质量」（残差 / 内点率 / 可观性）。外部位姿这类不带质量信息的
+    /// 位姿源置 false：健康状态机此时只能判新鲜度，不能假装内点率是 100%（D38）。
+    bool has_registration_quality{true};
 };
 
 /// 位姿源选择策略。

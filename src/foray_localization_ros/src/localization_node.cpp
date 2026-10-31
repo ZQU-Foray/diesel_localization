@@ -411,19 +411,58 @@ void LocalizationNode::on_external_pose(
     foray::localization::RegistrationSample sample;
     sample.stamp_ns = stamp_ns;
     sample.valid = true;
+    // 外部位姿没有可测的配准质量：明明不知道内点率是多少，就不能写 1.0 冒充满分质检
+    // 报告（父提交这里硬写 inlier_ratio = fitness = 1.0）。健康状态机见到这个标记就
+    // 只判新鲜度，见 decision.md D38。
+    sample.has_registration_quality = false;
     sample.mean_residual_m = 0.0;
-    sample.inlier_ratio = 1.0;
-    sample.fitness = 1.0;
+    sample.inlier_ratio = 0.0;
+    sample.fitness = 0.0;
 
     std::lock_guard<std::mutex> lock(mutex_);
+    const std::int64_t now_ns = now().nanoseconds();
+    // 仲裁（decision.md D38）：显式 kExternal 一律接受；kAuto 只在雷达位姿确实断流时
+    // 才把控制权交给外部位姿。父提交只挡了 kLidar，于是三份兵种配置的 `auto` 里，
+    // 一路外部位姿会把雷达配准结果整条覆盖掉。
+    if (policy_ == foray::localization::PoseSourcePolicy::kAuto && lidar_available_locked(now_ns)) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "忽略外部位姿: 雷达位姿仍然新鲜（pose_source=auto）");
+        return;
+    }
+
     map_to_base_ = map_to_base;
-    map_to_odom_ = map_to_base;
-    odom_to_base_ = Eigen::Isometry3d::Identity();
-    last_odom_ns_ = stamp_ns;
-    has_odom_ = true;
+    // 外部位姿是 `map → base` 的量测，和配准结果同一类观测：据此反推 `map → odom`。
+    // 不再像父提交那样把 odom_to_base_ 重置成单位阵——那会把里程计链路一起改掉。
+    map_to_odom_ = map_to_base_ * odom_to_base_.inverse();
     last_valid_ns_ = stamp_ns;
-    active_source_ = foray::localization::PoseSource::kExternalOdom;
-    health_status_ = health_.update(sample, stamp_ns, stamp_ns, max_odom_lag_sec_);
+    last_external_ns_ = stamp_ns;
+    // 外部位姿模式下 `map → odom` 不依赖里程计，所以 odom 新鲜度按「刚刚收到」传入；
+    // 真正要判的是外部位姿自己是否还在时限内（external_available_locked）。
+    health_status_ = health_.update(sample, now_ns, now_ns, 0.0);
+}
+
+bool LocalizationNode::lidar_available_locked(std::int64_t now_ns) const {
+    // 「可用」= 时限内收到过点云。不用 has_cloud_：配准消费掉它之后雷达仍然是活的。
+    if (last_cloud_rx_ns_ <= 0) {
+        return false;
+    }
+    if (health_config_.lidar_timeout_sec <= 0.0) {
+        return true;
+    }
+    return static_cast<double>(now_ns - last_cloud_rx_ns_) / 1e9 <=
+           health_config_.lidar_timeout_sec;
+}
+
+bool LocalizationNode::external_available_locked(std::int64_t now_ns) const {
+    // 外部位姿的「断流」沿用 odom_timeout_sec：都属于「位姿流断了」这一类成因，
+    // 不新增参数（D28 第三条纪律）。
+    if (last_external_ns_ <= 0) {
+        return false;
+    }
+    if (health_config_.odom_timeout_sec <= 0.0) {
+        return true;
+    }
+    return static_cast<double>(now_ns - last_external_ns_) / 1e9 <= health_config_.odom_timeout_sec;
 }
 
 void LocalizationNode::maybe_flush_profile(std::int64_t now_ns) {
@@ -572,19 +611,27 @@ void LocalizationNode::on_align_timer() {
 void LocalizationNode::publish_state() {
     std::lock_guard<std::mutex> lock(mutex_);
     const std::int64_t now_ns = now().nanoseconds();
+    // 位姿源每拍重算（decision.md D38）：`select_pose_source()` 回答的是「此刻哪条源可用」，
+    // 不是「历史上谁接管过」。父提交只在收到外部位姿时改一次 active_source_，雷达恢复后
+    // 也翻不回来，`pose_source: auto` 于是退化成「谁先到谁永久接管」。
+    const bool lidar_available = lidar_available_locked(now_ns);
+    const bool external_available = external_available_locked(now_ns);
+    active_source_ =
+        foray::localization::select_pose_source(policy_, lidar_available, external_available);
     // 地图不可用是最靠前的成因：没有地图就没有配准，`on_align_timer()` 会在 `!has_map_`
     // 处提前返回、从不喂健康状态机，所以必须在这里按节拍显式喂 LOST（decision.md D36）。
     if (!has_map_) {
         health_status_ = health_.enter_lost(
             "map unavailable: " + (map_error_.empty() ? std::string("unknown") : map_error_),
             now_ns);
-    } else if (policy_ == foray::localization::PoseSourcePolicy::kExternal) {
+    } else if (active_source_ == foray::localization::PoseSource::kExternalOdom) {
         foray::localization::RegistrationSample sample;
-        sample.stamp_ns = now_ns;
-        sample.valid = last_odom_ns_ > 0;
+        sample.stamp_ns = last_external_ns_;
+        sample.valid = true;
+        sample.has_registration_quality = false;
         sample.mean_residual_m = 0.0;
-        sample.inlier_ratio = sample.valid ? 1.0 : 0.0;
-        health_status_ = health_.update(sample, now_ns, last_odom_ns_, max_odom_lag_sec_);
+        sample.inlier_ratio = 0.0;
+        health_status_ = health_.update(sample, now_ns, now_ns, 0.0);
     } else if (has_odom_ && health_config_.odom_timeout_sec > 0.0 &&
                static_cast<double>(now_ns - last_odom_ns_) / 1e9 >
                    health_config_.odom_timeout_sec) {
@@ -594,9 +641,7 @@ void LocalizationNode::publish_state() {
         sample.mean_residual_m = 0.0;
         sample.inlier_ratio = 0.0;
         health_status_ = health_.update(sample, now_ns, last_odom_ns_, max_odom_lag_sec_);
-    } else if (has_odom_ && health_config_.lidar_timeout_sec > 0.0 &&
-               (last_cloud_rx_ns_ <= 0 || static_cast<double>(now_ns - last_cloud_rx_ns_) / 1e9 >
-                                              health_config_.lidar_timeout_sec)) {
+    } else if (has_odom_ && !lidar_available) {
         // 激光断流：点云停下后配准回调不再运行（!has_cloud_ 提前 return），
         // 若这里不显式喂不可用样本，健康状态会冻结在 OK，TF 会按旧 map→odom 继续外推，
         // 正是 README 明令禁止的「静默外推」。状态机自身负责 DEGRADED→LOST 的时限。
@@ -611,7 +656,7 @@ void LocalizationNode::publish_state() {
     foray::localization::Pose3D pose;
     pose.parent_frame = map_frame_;
     pose.child_frame = base_frame_;
-    pose.transform = policy_ == foray::localization::PoseSourcePolicy::kExternal
+    pose.transform = active_source_ == foray::localization::PoseSource::kExternalOdom
                          ? map_to_base_
                          : map_to_odom_ * odom_to_base_;
 

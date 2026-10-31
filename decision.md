@@ -1198,3 +1198,61 @@ Consequences:
   方向钉死（写对得 0.890，写反得 1.110）。
 
 状态：已实现（2026-10-31）。
+
+## D38 位姿源仲裁：`auto` 是每拍重算的函数，外部位姿没有可测质量
+
+Context: `HealthConfig` 旁边早就有一个纯函数 `select_pose_source(policy, lidar_available,
+external_available)`，三份兵种配置也统一写着 `pose_source: auto`——但节点从来没调用过它。
+父提交的 `on_external_pose()` 只挡 `policy == kLidar`，其余情况一律接管：把 `map_to_base_`
+与 `map_to_odom_` 换成外部位姿、`odom_to_base_` 重置成单位阵、`active_source_` 写成
+`kExternalOdom`，而且这一写就再也翻不回来。于是三份配置的 `auto` 实际语义是
+「谁先到谁永久接管」：雷达配准跑得再好，一路外部位姿就能把结果整条盖掉，而且
+`LocalizationState.source` 从此永远报 `EXTERNAL_ODOM`——下游拿到的是一个说谎的来源标记。
+
+同一个函数里还有第二处伪造：外部位姿的 `RegistrationSample` 被写成
+`inlier_ratio = 1.0, fitness = 1.0, mean_residual_m = 0.0`。外部位姿根本没有配准过程，
+这三个数是**不存在**的量，写满分等于伪造一份质检报告，让健康状态机以「配准质量优秀」
+为理由判 `OK`。
+
+Decision:
+1. `RegistrationSample` 增 `bool has_registration_quality`（默认 `true`）。外部位姿置
+   `false`，并如实把 `mean_residual_m`/`inlier_ratio`/`fitness` 留 0。
+2. `HealthMonitor::update()` 见到 `has_registration_quality == false` 就只判新鲜度：
+   `points_ok`、`observable_ok`、`good`、`degraded_ok` 一律视为成立（不是「放宽阈值」，
+   而是「本样本没有这项被判的量」）；`compute_confidence()` 按状态给 1.0 / 0.5。
+3. `on_external_pose()` 的接受条件：`kExternal` 无条件接受；`kAuto` 只在
+   `!lidar_available_locked(now)`（`lidar_timeout_sec` 内没收到过点云）时接受，否则丢弃
+   并 `RCLCPP_WARN_THROTTLE`；`kLidar` 直接返回。
+4. 外部位姿不再改 `odom_to_base_`，改为按 `map_to_odom_ = map_to_base_ · odom_to_base_⁻¹`
+   反推——它和配准结果是同一类观测（`map → base` 的量测），不该顺手把里程计链路也改掉。
+5. `publish_state()` 每拍 `active_source_ = select_pose_source(policy_, lidar_ok, external_ok)`
+   并据它挑位姿（`map_to_base_` 或 `map_to_odom_ · odom_to_base_`）与上报 `source`。
+   新鲜度判定抽成 `lidar_available_locked()` / `external_available_locked()`，后者新增
+   状态 `last_external_ns_`（父提交没有任何「外部位姿还在不在」的状态）。
+6. 外部位姿分支喂健康状态机时传 `last_odom_ns = now_ns`：外部位姿模式下 `map → odom`
+   不依赖里程计，此时「odom 断流」不该成为 LOST 的成因。
+
+Reason: `pose_source` 是运维的开关，不是一次性事件。仲裁必须回答「此刻哪条源可用」，
+否则一旦外部位姿接管，雷达恢复后系统没有任何路径可以纠正回来——`auto` 也就失去了意义。
+质量判据与「质量不可测」是两件事，混在一起只能靠伪造数值来通过，而伪造的数值会让
+`OK` 变成一个不携带信息的绿灯。
+
+Alternatives: ①只把 `active_source_` 改成每拍重算，仍留 `inlier_ratio = 1.0`；
+②`kAuto` 下「外部位姿优先级高于雷达」；③固定 `odom_timeout_sec` 之外另加参数控制外部
+位姿新鲜度（新增 ROS 参数）。
+Rejected: ①留下的是「谁先到谁接管」的同一个病根，只是把症状藏在质量字段里；②外部位姿
+通常来自视觉/上位机，精度低于 5 Hz 的 GICP 结果，让低精度源抢占高精度源没有理由；
+③D28 第三条纪律要求不新增 ROS 参数，`odom_timeout_sec` 表达的就是「位姿流断了」这一类
+成因，够用。
+
+Consequences:
+- 三份兵种配置的 `auto` 现在真的会跟随雷达状态；`external` 仍是无条件采用（步兵/重装
+  的既定用法不变）。
+- `source` 字段变成每拍的真实结论，下游可以据此区分「雷达位姿」与「外部位姿」。
+- 外部位姿配置下健康状态只表达新鲜度：`OK` 意味着「位姿在更新」，**不**意味着「配准质量
+  好」。这一点写进了 `README.md` 健康契约。
+- `test_localization_node` 三条集成用例钉住行为：雷达新鲜时外部位姿被忽略（父提交
+  `source=2, x=5.000`）、雷达断流后接管（父提交 `state=2` 且仍未真正接管）、雷达恢复后
+  翻回雷达（父提交永远 `source=2`）。
+
+状态：已实现（2026-10-31）。

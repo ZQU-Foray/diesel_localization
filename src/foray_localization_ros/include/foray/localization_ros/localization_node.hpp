@@ -122,6 +122,10 @@ class LocalizationNode : public rclcpp::Node {
     /// @param timeout 等待上限：点云用 100 ms 容忍 TF 晚到；里程计 200 Hz，用 0（不阻塞）。
     bool lookup_base_from(const std::string& child_frame, const rclcpp::Time& time,
                           std::chrono::milliseconds timeout, Eigen::Isometry3d* base_from_child);
+    /// 雷达位姿是否还新鲜（`lidar_timeout_sec` 内收到过点云）。调用方须持有 `mutex_`。
+    bool lidar_available_locked(std::int64_t now_ns) const;
+    /// 外部位姿是否还新鲜（`odom_timeout_sec` 内收到过一帧）。调用方须持有 `mutex_`。
+    bool external_available_locked(std::int64_t now_ns) const;
 
     rclcpp::Publisher<foray_localization_ros::msg::LocalizationState>::SharedPtr state_pub_;
     rclcpp::Publisher<foray_localization_ros::msg::MapMeta>::SharedPtr map_meta_pub_;
@@ -183,6 +187,9 @@ class LocalizationNode : public rclcpp::Node {
     Eigen::Isometry3d map_to_base_{Eigen::Isometry3d::Identity()};
     Eigen::Isometry3d map_to_odom_{Eigen::Isometry3d::Identity()};
     std::int64_t last_valid_ns_{0};
+    /// 最近一次被接受的外部位姿时间戳（decision.md D38）：位姿源仲裁要用它判新鲜度，
+    /// 父提交没有任何「外部位姿还在不在」的状态，于是接管之后永远翻不回来。
+    std::int64_t last_external_ns_{0};
     foray::localization::HealthStatus health_status_;
     std::atomic<bool> relocalize_pending_{false};
     Eigen::Isometry3d pending_map_to_base_{Eigen::Isometry3d::Identity()};

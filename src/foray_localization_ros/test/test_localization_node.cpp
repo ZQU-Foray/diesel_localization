@@ -183,6 +183,91 @@ TEST(LocalizationNodeTest, OdometryWithoutChildFrameTfIsDropped) {
     EXPECT_NE(harness.last_state().state, LocalizationState::STATE_OK);
 }
 
+/// 一直喂里程计 + 点云直到健康状态进入 OK（warmup_frames 帧合格配准）。
+bool drive_until_ok(NodeHarness& harness, std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_cloud(10);
+        if (harness.last_state().state == LocalizationState::STATE_OK) {
+            return true;
+        }
+        std::this_thread::sleep_for(20ms);
+    }
+    return false;
+}
+
+void print_source_receipt(const char* label, const StateRecord& state) {
+    std::printf("L4 回执(%s): state=%u source=%u pose_valid=%d x=%.3f reason=%s\n", label,
+                static_cast<unsigned>(state.state), static_cast<unsigned>(state.source),
+                state.pose_valid ? 1 : 0, state.x, state.reason.c_str());
+}
+
+/// L4 用例一：`pose_source: auto` + 雷达位姿新鲜时，外部位姿必须被忽略。
+/// 父提交只挡了 `kLidar`，于是三份兵种配置的 `auto` 里外部位姿会把配准结果整条盖掉。
+TEST(LocalizationNodeTest, AutoPolicyIgnoresExternalPoseWhileLidarIsFresh) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+    ASSERT_TRUE(drive_until_ok(harness, 5000ms)) << "雷达链路没有进入 OK";
+
+    // 雷达始终新鲜，同时持续灌外部位姿（x = 5.0，与配准结果明显不同）。
+    harness.drive(1000ms, 20ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_cloud(10);
+        harness.publish_external_pose(5.0, 0.0);
+    });
+
+    const auto state = harness.last_state();
+    print_source_receipt("auto+雷达新鲜", state);
+    EXPECT_EQ(state.state, LocalizationState::STATE_OK);
+    EXPECT_EQ(state.source, LocalizationState::SOURCE_SENTRY_LIDAR);
+    EXPECT_LT(state.x, 1.0) << "外部位姿把 map → base 直接盖掉了雷达结果";
+}
+
+/// L4 用例二：雷达断流超过 `lidar_timeout_sec` 后，`auto` 允许外部位姿接管。
+TEST(LocalizationNodeTest, AutoPolicyAcceptsExternalPoseWhenLidarStalls) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+    ASSERT_TRUE(drive_until_ok(harness, 5000ms)) << "雷达链路没有进入 OK";
+
+    // 停发点云，只留里程计与外部位姿：雷达位姿超时 → 外部位姿接管。
+    harness.drive(800ms, 20ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_external_pose(5.0, 0.0);
+    });
+
+    const auto state = harness.last_state();
+    print_source_receipt("auto+雷达断流", state);
+    EXPECT_EQ(state.source, LocalizationState::SOURCE_EXTERNAL_ODOM);
+    EXPECT_NEAR(state.x, 5.0, 0.05);
+    EXPECT_EQ(state.state, LocalizationState::STATE_OK) << "外部位姿新鲜却被判成不可用";
+}
+
+/// L4 用例三：雷达恢复后位姿源必须翻回雷达。
+/// 父提交把 active_source_ 写死在收外部位姿那一刻，此用例永远是 EXTERNAL_ODOM。
+TEST(LocalizationNodeTest, AutoPolicySwitchesBackToLidarWhenItReturns) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+    ASSERT_TRUE(drive_until_ok(harness, 5000ms)) << "雷达链路没有进入 OK";
+
+    harness.drive(600ms, 20ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_external_pose(5.0, 0.0);
+    });
+    const auto taken_over = harness.last_state();
+    print_source_receipt("雷达断流接管", taken_over);
+    ASSERT_EQ(taken_over.source, LocalizationState::SOURCE_EXTERNAL_ODOM);
+
+    harness.drive(600ms, 20ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_cloud(10);
+        harness.publish_external_pose(5.0, 0.0);
+    });
+    const auto state = harness.last_state();
+    print_source_receipt("雷达恢复", state);
+    EXPECT_EQ(state.source, LocalizationState::SOURCE_SENTRY_LIDAR);
+}
+
 } // namespace
 } // namespace foray::localization_ros::test_support
 
