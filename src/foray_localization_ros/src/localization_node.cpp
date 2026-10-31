@@ -261,6 +261,29 @@ void LocalizationNode::mark_map_unavailable(const std::string& reason) {
     health_status_ = health_.enter_lost("map unavailable: " + reason, now().nanoseconds());
 }
 
+bool LocalizationNode::lookup_base_from(const std::string& child_frame,
+                                       const rclcpp::Time& time,
+                                       std::chrono::milliseconds timeout,
+                                       Eigen::Isometry3d* base_from_child) {
+    try {
+        const auto transform = tf_buffer_.lookupTransform(base_frame_, child_frame, time, timeout);
+        const auto& stamped = transform.transform;
+        const Eigen::Quaterniond quaternion(stamped.rotation.w, stamped.rotation.x,
+                                            stamped.rotation.y, stamped.rotation.z);
+        base_from_child->setIdentity();
+        if (quaternion.norm() > 1e-9) {
+            base_from_child->linear() = quaternion.normalized().toRotationMatrix();
+        }
+        base_from_child->translation() = Eigen::Vector3d(
+            stamped.translation.x, stamped.translation.y, stamped.translation.z);
+        return true;
+    } catch (const tf2::TransformException& exception) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "TF %s->%s 失败: %s",
+                             child_frame.c_str(), base_frame_.c_str(), exception.what());
+        return false;
+    }
+}
+
 void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud) {
     std::string error;
     const auto profile_begin = std::chrono::steady_clock::now();
@@ -293,23 +316,8 @@ void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstShared
 
     Eigen::Isometry3d base_from_cloud = Eigen::Isometry3d::Identity();
     if (!cloud->header.frame_id.empty() && cloud->header.frame_id != base_frame_) {
-        try {
-            const auto transform = tf_buffer_.lookupTransform(base_frame_, cloud->header.frame_id,
-                                                              rclcpp::Time(cloud->header.stamp),
-                                                              std::chrono::milliseconds(100));
-            const auto& stamped = transform.transform;
-            const Eigen::Quaterniond quaternion(stamped.rotation.w, stamped.rotation.x,
-                                                stamped.rotation.y, stamped.rotation.z);
-            base_from_cloud.setIdentity();
-            if (quaternion.norm() > 1e-9) {
-                base_from_cloud.linear() = quaternion.normalized().toRotationMatrix();
-            }
-            base_from_cloud.translation() = Eigen::Vector3d(
-                stamped.translation.x, stamped.translation.y, stamped.translation.z);
-        } catch (const tf2::TransformException& exception) {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "点云 TF %s->%s 失败: %s",
-                                 cloud->header.frame_id.c_str(), base_frame_.c_str(),
-                                 exception.what());
+        if (!lookup_base_from(cloud->header.frame_id, rclcpp::Time(cloud->header.stamp),
+                              std::chrono::milliseconds(100), &base_from_cloud)) {
             return;
         }
     }
@@ -342,9 +350,27 @@ void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::ConstSharedPtr
     if (!to_timestamp_ns(odometry->header.stamp, &stamp_ns)) {
         return;
     }
-    Eigen::Isometry3d odom_to_base;
-    if (!to_isometry(odometry->pose.pose, &odom_to_base)) {
+    Eigen::Isometry3d odom_to_child;
+    if (!to_isometry(odometry->pose.pose, &odom_to_child)) {
         return;
+    }
+    // `Odometry.pose` 的语义是 `odom → child_frame_id`，下游要的是 `odom → base_frame`
+    // （decision.md D37）。父提交直接把前者当后者用：只要上游发的是 `odom → livox_frame`
+    // ——`README.md` 里 point_lio 就是这个约定——雷达与 base 之间的外参就被整块丢掉，
+    // 而这条外参正好是 `map → odom` 的杠杆臂。这里和 `on_cloud()` 用同一套 TF 转换；
+    // 查不到就丢帧，绝不拿单位阵把「不知道」装成「一致」。
+    Eigen::Isometry3d odom_to_base = odom_to_child;
+    if (odometry->child_frame_id != base_frame_) {
+        Eigen::Isometry3d base_from_child = Eigen::Isometry3d::Identity();
+        // 取「最新可用」而不是「本帧 stamp」：里程计 200 Hz，逐帧精确查 TF 一旦晚到就会被
+        // 判成未来外插；雷达/base 的安装外参是刚体量，晚一个 TF 周期没有影响。
+        // timeout 取 0：这条回调 5 ms 就来一帧，任何阻塞等待都会把队列堆起来（L1 的病）。
+        if (!lookup_base_from(odometry->child_frame_id, rclcpp::Time(0, 0, RCL_ROS_TIME),
+                             std::chrono::milliseconds(0), &base_from_child)) {
+            return;
+        }
+        // T(odom←base) = T(odom←child) · T(child←base)，而 T(child←base) = T(base←child)⁻¹。
+        odom_to_base = odom_to_child * base_from_child.inverse();
     }
 
     std::lock_guard<std::mutex> lock(mutex_);

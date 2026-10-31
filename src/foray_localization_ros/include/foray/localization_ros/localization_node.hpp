@@ -21,6 +21,7 @@
 
 #include <Eigen/Geometry>
 
+#include <builtin_interfaces/msg/time.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -30,6 +31,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -114,6 +116,12 @@ class LocalizationNode : public rclcpp::Node {
     /// 把「地图不可用」写成一条显式事实：记下原因并把健康状态压进 `LOST`。
     /// 只被 `load_map()` 的失败分支调用（decision.md D36）。
     void mark_map_unavailable(const std::string& reason);
+    /// 查 `base_frame_ → child_frame` 的外参（decision.md D37）。点云与里程计共用这一套：
+    /// 拿不到就返回 false，调用方负责丢帧——绝不返回单位阵把「不知道」装成「一致」。
+    /// @param time 查询时刻；传 `rclcpp::Time(0)` 表示「取最新可用」。
+    /// @param timeout 等待上限：点云用 100 ms 容忍 TF 晚到；里程计 200 Hz，用 0（不阻塞）。
+    bool lookup_base_from(const std::string& child_frame, const rclcpp::Time& time,
+                          std::chrono::milliseconds timeout, Eigen::Isometry3d* base_from_child);
 
     rclcpp::Publisher<foray_localization_ros::msg::LocalizationState>::SharedPtr state_pub_;
     rclcpp::Publisher<foray_localization_ros::msg::MapMeta>::SharedPtr map_meta_pub_;

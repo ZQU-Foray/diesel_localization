@@ -1163,3 +1163,38 @@ Consequences:
   若将来加地图热重载，必须同时清 `map_error_` 并 `health_.reset()`。
 
 状态：已实现（2026-10-31）。
+
+## D37 里程计的子帧语义：`Odometry.pose` 是 `odom → child_frame_id`，不是 `odom → base`
+
+Context: `README.md` 的输入表写着 `/aft_mapped_to_init`「point_lio 发布的 `odom → lidar`」，
+而节点把 `Odometry.pose` 直接当成 `odom → base_footprint` 用：`odom_to_base_ = to_isometry(pose)`
+之后 `map → odom` 由 `map_to_base_ * odom_to_base_⁻¹` 反推。只要上游按文档发的是
+`odom → livox_frame`，雷达与 base 之间的安装外参就被整块丢掉——而这条外参正是
+`map → odom` 的杠杆臂：0.11 m 的偏移会让每次配准都把 0.11 m 记进 `map → odom`。
+父提交里 `on_cloud()` 已经会用 TF 把点云从传感器系换到 base 系，唯独里程计这条路没有。
+
+Decision:
+1. `child_frame_id == base_frame` 时不做任何额外换算（零开销，最常见配置）。
+2. 否则用 `lookupTransform(base_frame, child_frame)` 取 `T(base←child)`，按
+   `T(odom←base) = T(odom←child) · T(base←child)⁻¹` 换算——与 `on_cloud()` 共用同一个
+   `lookup_base_from()`，包括「查询失败就丢帧」的行为。
+3. 里程计这条路径的 TF 查询用**最新可用**（`rclcpp::Time(0)`）且 `timeout = 0`；点云仍用
+   本帧 stamp + 100 ms。理由：里程计 200 Hz，逐帧精确查 TF 在 TF 晚到时会被判成「向未来
+   外插」，而 timeout 一开就等于在 5 ms 一帧的回调里阻塞等待——那正是 L1 要根治的病。
+   雷达/base 的安装外参是刚体量，晚一个 TF 周期没有影响。
+
+Reason: 「子帧」是 `nav_msgs/Odometry` 的必需字段，它表达的是位姿属于哪个坐标系。把它
+当装饰品，等于承认「我们不知道自己在哪个系里」——而下游所有闭环都建立在这个系上。
+
+Alternatives: 校验 `child_frame_id == base_frame` 不符就拒收；直接按 `to_isometry` 用。
+Rejected: 前者会让按文档发布的 point_lio 一帧都进不来（README 明说它发 `odom → lidar`）；
+后者就是父提交的现状。**没有**「查不到 TF 就按单位阵算」这个选项（D28 ③）。
+
+Consequences:
+- 里程计回调多一次 TF 查询（命中即返回，实测 1 ms 内）；查不到时丢帧并把 `last_odom_ns_`
+  停住，由健康状态机按 `odom_timeout_sec` 判超时。
+- `T(base←child)` 的符号容易写反：`lookupTransform(target, source)` 返回的是
+  `p_target = T · p_source`，所以乘进去之前必须 `.inverse()`。测试用 0.11 m 的外参把
+  方向钉死（写对得 0.890，写反得 1.110）。
+
+状态：已实现（2026-10-31）。

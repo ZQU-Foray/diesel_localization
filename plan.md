@@ -70,6 +70,10 @@
       （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
       上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
       `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
+    - [x] **L3 里程计子帧与外参换算**（`decision.md` D37）：`Odometry.pose` 按
+      `odom → child_frame_id` 解释，`child != base` 时用 TF 补 `T(base←child)` 并取逆乘进去。
+      `test_localization_node` 两条用例：0.11 m 外参 → state x=0.890（父提交 1.000）；
+      查不到 TF → 收到 78 帧、处理 0 帧、`tf_published=0`（父提交全部照收并发 TF）。
   - [ ] **P2 L6/L7/L8/L11/L12/L13/L14/L15/L16 + 附带(a)(b)**：点云消费与 TF 时间戳、
     协方差真实填充、odom QoS 对齐 `sensor_data`、ICP 弧度阈值、EKF 增益饱和与
     Joseph 形式、GICP 缓存指纹、可观性掩码统一到 `map → odom`、新鲜度判定统一时钟域、

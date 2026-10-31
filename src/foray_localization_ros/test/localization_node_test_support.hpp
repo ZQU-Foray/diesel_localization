@@ -19,6 +19,7 @@
 #include <sensor_msgs/msg/point_field.hpp>
 #include <tf2/time.h>
 #include <tf2_ros/buffer.h>
+#include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
 #include <algorithm>
@@ -382,6 +383,24 @@ class NodeHarness {
         }
     }
 
+    /// 发布一条静态外参（`/tf_static`），用来把雷达/里程计子帧与 `base_footprint` 串起来。
+    /// 静态变换只发一次即可，但 TF 监听器是异步收的，紧接着发数据可能还没进 buffer。
+    void publish_static_transform(const std::string& parent, const std::string& child, double x,
+                                  double y, double z = 0.0) {
+        if (!static_broadcaster_) {
+            static_broadcaster_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(spy_);
+        }
+        geometry_msgs::msg::TransformStamped message;
+        message.header.stamp = spy_->now();
+        message.header.frame_id = parent;
+        message.child_frame_id = child;
+        message.transform.translation.x = x;
+        message.transform.translation.y = y;
+        message.transform.translation.z = z;
+        message.transform.rotation.w = 1.0;
+        static_broadcaster_->sendTransform(message);
+    }
+
     LocalizationNode::Diagnostics diagnostics() { return node_->diagnostics(); }
 
   private:
@@ -393,6 +412,7 @@ class NodeHarness {
     rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr external_pub_;
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
     std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
     std::thread spinner_;
     std::mutex record_mutex_;

@@ -116,6 +116,10 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | 输入 | `/aft_mapped_to_init` | `nav_msgs/Odometry` | sensor_data / 100–200 Hz |
 | 输入 | `/livox/lidar` | `sensor_msgs/PointCloud2` | sensor_data / 10 Hz |
 | 输入 | `/localization/external_pose` | `geometry_msgs/PoseWithCovarianceStamped` | 步兵/重装外部位姿，50 Hz |
+
+`/aft_mapped_to_init` 的 `pose` 是 `odom → child_frame_id`：`child_frame_id` 等于
+`base_frame` 时直接使用，否则按 TF 把安装外参换算进来（`decision.md` D37）；查不到 TF
+就丢这一帧，不会拿单位阵冒充。
 | 输出 | `/localization/state` | `foray_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
 | 输出 | `/localization/map_meta` | `foray_localization_ros/MapMeta` | transient_local / 1 Hz |
 | 输出 | `/localization/dynamic_obstacles` | `foray_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |

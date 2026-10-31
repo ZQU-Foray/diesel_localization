@@ -133,6 +133,56 @@ TEST(LocalizationNodeTest, SlowAlignmentKeepsHealthOk) {
     EXPECT_GT(diagnostics.max_align_ms, 150.0);
 }
 
+/// L3：`Odometry.pose` 是 `odom → child_frame_id`，不是 `odom → base_footprint`。
+/// 上游（point_lio）按 `odom → livox_frame` 发布，两者的差就是雷达外参。
+/// 这里给一条 0.11 m 的 `base_footprint → livox_frame` 静态外参，看状态位姿是否按它换算。
+TEST(LocalizationNodeTest, OdometryChildFrameIsConvertedThroughTf) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+    harness.publish_static_transform("base_footprint", "livox_frame", 0.11, 0.0);
+
+    // 静态外参是异步进 buffer 的：持续发里程计，直到真的有帧被接受。
+    harness.drive(1000ms, 10ms, [&harness](std::int64_t) {
+        harness.publish_odom(1.0, 0.0, "livox_frame");
+    });
+    ASSERT_TRUE(harness.wait_until(
+        [&harness]() { return harness.diagnostics().odom_processed > 0; }, 3000ms))
+        << "odom → livox_frame 的帧全部被丢弃：TF 没接上或子帧校验过严";
+    ASSERT_TRUE(harness.wait_until([&harness]() { return harness.state_count() > 3; }, 3000ms));
+
+    const double base_x = harness.last_state().x;
+    std::printf("L3 回执: odom→livox_frame x=1.000, base_footprint→livox_frame x=0.110, "
+                "state x=%.3f\n",
+                base_x);
+    // odom → base = odom → livox * (base ← livox) = 1.00 - 0.11。
+    EXPECT_NEAR(base_x, 0.89, 0.02)
+        << "子帧外参没有被换算进 odom → base（父提交直接当成 odom → base 用，会得到 1.000）";
+}
+
+/// L3：子帧对不上又查不到 TF 时必须丢帧。父提交不看子帧，照收不误。
+TEST(LocalizationNodeTest, OdometryWithoutChildFrameTfIsDropped) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+
+    harness.drive(800ms, 10ms, [&harness](std::int64_t) {
+        harness.publish_odom(1.0, 0.0, "livox_frame");
+    });
+
+    const auto diagnostics = harness.diagnostics();
+    std::printf("L3 回执: odom_received=%llu odom_processed=%llu\n",
+                static_cast<unsigned long long>(diagnostics.odom_received),
+                static_cast<unsigned long long>(diagnostics.odom_processed));
+    EXPECT_GT(diagnostics.odom_received, 0U);
+    EXPECT_EQ(diagnostics.odom_processed, 0U)
+        << "查不到 base ← livox_frame 却仍然把 odom → livox 当成 odom → base 用了";
+    // 一帧都没被接受 ⇒ 从来没有 odom → base，TF 也就一帧都不该发。
+    // （「收不到任何里程计」这条路径下状态机目前停在 INITIALIZING 而不会转 LOST，
+    //   因为 publish_state() 的各分支都以 `has_odom_` 为前置；这是本轮新发现，另行上报。）
+    EXPECT_EQ(harness.diagnostics().tf_published, 0U);
+    harness.drive(600ms, 10ms, [&harness](std::int64_t) { harness.publish_cloud(10); });
+    EXPECT_NE(harness.last_state().state, LocalizationState::STATE_OK);
+}
+
 } // namespace
 } // namespace foray::localization_ros::test_support
 
