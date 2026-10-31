@@ -970,3 +970,88 @@ Consequences: 配准单帧从 ~73 ms 降到 ~31 ms（本机、Onboard model 量�
 按实例拆分，不能共享。
 
 状态：已实现（2026-10-30）。
+
+
+---
+
+## D28 审计整改只改根因：不新增参数、不改契约、不补静默兜底
+
+Context: `audit/tasks/02-foray_localization.md` 对 `feat/fov-observability-ekf` @ `25e5bf9`
+列出 20 条发现（1 blocker + 6 high + 11 medium + 2 low），审计方的一句话结论是
+「算法本身写得不错，问题全在 ROS 边界，而且到处都在静默降级」。任务书同时给了硬约束：
+一条发现一个提交、每条都要留下能复现「改前坏」的离线回执、不许改测试期望值来让测试变绿。
+
+Decision: 本轮整改的五条自定纪律——
+1. 只改根因。落到执行器/回调组/QoS/参数声明顺序/契约这些边界上，不在调用点加减速器。
+2. **不新增 ROS 参数、不改 `.msg` / `.srv`**。需要新语义时用 `constexpr` 常量与内部结构承载
+   （如 `RegistrationSample::has_registration_quality`、PCD 加载上限），`README.md` 的参数表
+   44 项与 `contracts.sha256` 保持不动——接口面每动一次，下游与实际部署就多一次同步风险。
+3. 要么正确，要么响亮地失败。TF 查不到就丢帧并 `WARN`，不拿单位阵冒充；地图加载失败就
+   `LOST`，不广播零位姿。
+4. 每条发现配一条能在父提交上复现失败的测试，先记录红、再改实现记录绿，回执进回报。
+5. 只在本仓动手。跨仓（协议、TF 帧链、submodule）与无实车数据无法取证的项，写进回报的
+   「未修」与「需要跨仓协调」，不越界改别人的仓库、不改 `audit/`。
+
+Reason: 静默降级是这次审计最大的系统性问题——`odometry timeout` 把「我算太慢」写成
+「里程计断了」、`pose_valid` 没人读、失败路径返回单位阵、参数声明顺序让两个安全旋钮永久
+失效。这些都不是算术错误，而是「出错时假装没出错」的边界代码。要治它，整改本身就不能用
+兜底式补丁：一旦在调用点加个单位阵或补一个 `if (!finite) return`，问题只是被搬到下一层，
+审计的判据（LOST 一帧 TF 都不许发）也就永远无从验证。
+
+Alternatives: 顺势把新语义做成 ROS 参数（可现场调）；顺带把 `LocalizationState` 加字段
+承载协方差/来源明细；直接引第三方定位框架替换节点层。
+Rejected: 加参数会把「安全旋钮有没有生效」这件事再外包给配置文件，本轮恰恰是要删掉这类
+隐性开关（L5 就是两个参数声明晚了一行的后果）；改 msg 会触发 `contract-lock` 与下游
+`foray_platform` 的同步，收益与风险不匹配，协方差用现有 `PoseWithCovariance` 就能表达；
+替换框架不是整改，是重写。
+
+Consequences:
+- 后续 D30 起的整改条目都受本条约束：能用内部结构表达的一律不新增参数，能用现有 msg
+  字段表达的一律不改契约。
+- 每条整改都要连带一个测试；`foray_localization_ros` 的测试从 2 个文件涨到 3 个以上，
+  构建时间与 `colcon test` 时长随之上升（节点级用例靠 `TIMEOUT` 兜底）。
+- 回报里必须区分「已修（有回执）」「未修（有理由）」，不允许「看起来修好了」。
+
+状态：实施中（2026-10-31）。
+
+---
+
+## D29 节点级可测试性：节点实现进库、可注入配准后端、诊断计数
+
+Context: 整改的 P0（L1）与三条 high（L2/L4/L5）验收条件都是**集成级**的——
+「注入 100–200 ms 配准耗时后不再出现 odom timeout」「地图加载失败时 `map → odom` 一帧都不发」
+「`pose_source: auto` 且雷达断流时才接受外部位姿」「`min_source_points: 200` + 30 点云要
+`DEGRADED`」。但 `foray_localization_ros` 只有一个 `conversion.cpp` + `adapters.cpp` 的库，
+`localization_node.cpp` 直接挂在 `add_executable` 下，测试不但构造不到节点，连符号都拿不到：
+父提交上把测试文件加进去、只把节点从库里摘掉，链接直接报
+`undefined reference to 'foray::localization_ros::LocalizationNode::LocalizationNode(
+rclcpp::NodeOptions const&, std::unique_ptr<foray::localization_map::Aligner>)'`。
+
+Decision:
+1. `localization_node.cpp` 移入 `foray_localization_ros_lib`，`localization_node` 可执行文件
+   只保留 `localization_node_main.cpp`；安装产物（可执行位置、库名）不变。
+2. 构造函数增加第二个参数 `std::unique_ptr<foray::localization_map::Aligner> aligner = nullptr`：
+   非空即替代 `make_aligner()`，并打印「配准后端: 注入（测试）」。生产入口不传，行为不变。
+3. 节点新增公开的 `Diagnostics` 结构（`odom_received / odom_processed / max_odom_lag_sec /
+   align_runs / max_align_ms / tf_published`）与 `diagnostics()`；`max_odom_lag_sec` 是
+   「节点时钟 `now()` − 消息 `header.stamp`」的窗口最大值——同一时钟域，用来把
+   「没收到 odom」与「收到了但排队没处理」分开。
+4. 测试在进程内构造节点，与观测节点一起跑在 `MultiThreadedExecutor` 上，输入输出全走真实
+   话题与 `/tf`（`test/localization_node_test_support.hpp` 提供临时地图、假后端、驱动循环）。
+
+Reason: 三条都要控制「配准耗时」这个自变量——真 GICP 的耗时与数据强相关，没法当控制变量；
+注入一个睡眠固定时长的后端，才能把「执行器是否挡住 odom」与「配准本身慢不慢」分开。
+断言也不能读日志：文本一变测试就废，而计数与时间量是同一份事实的另一种表示。
+
+Alternatives: 用 `launch_testing` 起真进程 + `ros2 bag play`；把配准耗时做成参数；解析日志。
+Rejected: `launch_testing` 拿不到节点内部计数，回放还依赖包体与时间源，比进程内构造慢一个
+量级且更脆；参数化耗时要新增参数，违反 D28 ②；解析日志等于把断言绑在提示语上，审计禁的就是
+这种「文案当契约」。
+
+Consequences:
+- `foray_localization_ros_lib` 的符号面变大（含节点），但它是仓内包、不对外承诺 ABI。
+- `Diagnostics` 是「测试与运维共用」的观测面：读时持 `mutex_`，不能在回调内部再调用它。
+- 夹具里刻意用 `MultiThreadedExecutor`：生产入口也是它，用单线程执行器就测不出 D30 的
+  回调组划分是否真的解开了阻塞。
+
+状态：已实现（2026-10-31）。

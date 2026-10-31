@@ -137,8 +137,10 @@
 │   │   │   ├── map_server_node.cpp
 │   │   │   └── map_server_node_main.cpp    map_server_node 可执行入口
 │   │   └── test/
+│   │       ├── localization_node_test_support.hpp  节点级测试夹具（临时地图/注入后端/话题驱动）
 │   │       ├── test_adapters.cpp
-│   │       └── test_conversion.cpp
+│   │       ├── test_conversion.cpp
+│   │       └── test_localization_node.cpp          在进程内构造主节点跑状态/配准/诊断
 │   │
 │   ├── foray_localization_relocalization/  可选 ONNX Runtime CPU 重定位（默认 OFF）
 │   │   ├── CMakeLists.txt

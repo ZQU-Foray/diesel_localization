@@ -56,6 +56,20 @@
     实测提速 < 15% 则不引入
   - [ ] **i8 GUI 审查产物**：补 `odom → base_footprint` 后尝试 RViz；不可用则交付
     monitor 四联图 + 自包含 HTML 报告
+- [ ] **M10 审计整改 L1–L18**（`audit/tasks/02-foray_localization.md`，原则见 `decision.md` D28）
+  - [x] **测试基建**：节点实现进库、可注入配准后端、`Diagnostics` 计数
+    （`decision.md` D29）
+  - [ ] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
+    odom 超时拆成「没收到」与「处理不及」两种 reason
+  - [ ] **P1 L2/L3/L4/L5/L9/L10**：地图失败转 LOST 且 TF 只放行 `OK`/`DEGRADED`、
+    `child_frame_id` 校验与 TF 补转换、位姿源仲裁接线（`select_pose_source`）、
+    参数声明顺序、配准量测锁内快照、PCD 加载上限与异常安全
+  - [ ] **P2 L6/L7/L8/L11/L12/L13/L14/L15/L16 + 附带(a)(b)**：点云消费与 TF 时间戳、
+    协方差真实填充、odom QoS 对齐 `sensor_data`、ICP 弧度阈值、EKF 增益饱和与
+    Joseph 形式、GICP 缓存指纹、可观性掩码统一到 `map → odom`、新鲜度判定统一时钟域、
+    删除死声明
+  - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
+
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 
 ## 当前 Agent State

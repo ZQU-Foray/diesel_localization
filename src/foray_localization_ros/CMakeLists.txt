@@ -30,9 +30,12 @@ rosidl_generate_interfaces(${PROJECT_NAME}
     DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 
+# 节点实现进库：节点级测试要能直接构造它（决策见 decision.md D29）。
+# 可执行文件只留 entry point，安装产物与之前一致。
 add_library(${PROJECT_NAME}_lib SHARED
     src/conversion.cpp
     src/adapters.cpp
+    src/localization_node.cpp
 )
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -63,7 +66,6 @@ target_link_libraries(${PROJECT_NAME}_lib ${cpp_typesupport_target})
 
 add_executable(localization_node
     src/localization_node_main.cpp
-    src/localization_node.cpp
 )
 target_link_libraries(localization_node ${PROJECT_NAME}_lib)
 
@@ -95,6 +97,14 @@ if(BUILD_TESTING)
 
     foray_add_test(test_adapters test/test_adapters.cpp)
     foray_add_test(test_conversion test/test_conversion.cpp)
+
+    # 节点级测试自带 main（要先 rclcpp::init 再跑 gtest），不能用 foray_add_test。
+    ament_add_gtest(
+        test_localization_node test/test_localization_node.cpp
+        SKIP_LINKING_MAIN_LIBRARIES
+        TIMEOUT 180
+    )
+    target_link_libraries(test_localization_node ${PROJECT_NAME}_lib)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

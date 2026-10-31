@@ -39,7 +39,28 @@ namespace foray::localization_ros {
 
 class LocalizationNode : public rclcpp::Node {
   public:
-    explicit LocalizationNode(const rclcpp::NodeOptions& options);
+    /// `aligner` 非空时替代工厂构造的后端（decision.md D21 的可替换点）。该参数只服务于
+    /// 离线回放与节点级测试：生产入口 `localization_node_main.cpp` 不传它，走编译期开关。
+    explicit LocalizationNode(const rclcpp::NodeOptions& options,
+                              std::unique_ptr<foray::localization_map::Aligner> aligner = nullptr);
+
+    /// 运行期计数快照（decision.md D29）。只服务于测试与现场排障，不参与任何控制逻辑。
+    /// 读的时候持锁，所以拿到的是同一时刻的一致快照。
+    struct Diagnostics {
+        /// 里程计回调进入次数（含随后被校验丢弃的帧）。
+        std::uint64_t odom_received{0};
+        /// 完成状态更新的里程计帧数；与上一项之差即被丢弃的帧数。
+        std::uint64_t odom_processed{0};
+        /// 处理里程计帧时 `now - header.stamp` 的峰值（秒）。两者都是节点时钟，可直接相减。
+        double max_odom_lag_sec{0.0};
+        /// 实际发生的配准次数，无论后端是真配准还是注入的桩。
+        std::uint64_t align_runs{0};
+        /// 单次配准耗时峰值（毫秒，steady_clock）。
+        double max_align_ms{0.0};
+        /// 成功广播 `map -> odom` 的次数。
+        std::uint64_t tf_published{0};
+    };
+    Diagnostics diagnostics();
 
   private:
     void on_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud);
@@ -140,6 +161,15 @@ class LocalizationNode : public rclcpp::Node {
     foray::localization::HealthStatus health_status_;
     std::atomic<bool> relocalize_pending_{false};
     Eigen::Isometry3d pending_map_to_base_{Eigen::Isometry3d::Identity()};
+
+    /// Diagnostics 的计数成员。`odom_received_` 用原子量：它要在持有 `mutex_` 之前累加，
+    /// 否则「进入次数」就等价于「处理次数」，区分不出排队与丢弃。其余计数都在 `mutex_` 内更新。
+    std::atomic<std::uint64_t> odom_received_{0};
+    std::uint64_t odom_processed_{0};
+    double max_odom_lag_sec_{0.0};
+    std::uint64_t align_runs_{0};
+    double max_align_ms_{0.0};
+    std::uint64_t tf_published_{0};
 };
 
 } // namespace foray::localization_ros

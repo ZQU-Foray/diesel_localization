@@ -44,7 +44,8 @@ foray::localization::PoseSourcePolicy parse_policy(const std::string& value) {
 
 } // namespace
 
-LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options)
+LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
+                                   std::unique_ptr<foray::localization_map::Aligner> aligner)
     : rclcpp::Node("foray_localization", options), tf_buffer_(get_clock()),
       tf_listener_(tf_buffer_), clusterer_(foray::localization_map::ResidualClustererConfig{}),
       health_() {
@@ -109,9 +110,15 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options)
         declare_parameter<int>("max_unobservable_dofs", 6);
     // 后端由编译期开关决定（decision.md D21）。启动时把实际后端打出来，
     // 免得出现「文档说 GICP、实际跑 ICP」这种只能在事后靠精度异常才发现的情况。
-    aligner_ = foray::localization_map::make_aligner(align_options);
-    RCLCPP_INFO(get_logger(), "配准后端: %s",
-                foray::localization_map::default_aligner_name().c_str());
+    // 注入后端只用于离线回放与节点级测试，日志必须明说，否则现场会误判成默认后端。
+    if (aligner) {
+        aligner_ = std::move(aligner);
+        RCLCPP_INFO(get_logger(), "配准后端: 注入（测试）");
+    } else {
+        aligner_ = foray::localization_map::make_aligner(align_options);
+        RCLCPP_INFO(get_logger(), "配准后端: %s",
+                    foray::localization_map::default_aligner_name().c_str());
+    }
 
     foray::localization_map::ResidualClustererConfig cluster_config;
     cluster_config.residual_threshold_m = residual_threshold_m_;
@@ -286,6 +293,9 @@ void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstShared
 }
 
 void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::ConstSharedPtr odometry) {
+    // 进入即计数，且不持锁：若在锁后才累加，「进入次数」就永远等于「处理次数」，
+    // 反而看不出帧在队列里等过头（decision.md D29）。
+    odom_received_.fetch_add(1, std::memory_order_relaxed);
     std::string error;
     if (!validate_odometry(*odometry, &error)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "丢弃无效里程计: %s", error.c_str());
@@ -308,6 +318,12 @@ void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::ConstSharedPtr
     odom_to_base_ = odom_to_base;
     last_odom_ns_ = stamp_ns;
     has_odom_ = true;
+    ++odom_processed_;
+    // 处理时刻与消息时间戳同为节点时钟，可以直接相减：这个差就是「帧在队列里等了多久」。
+    const double lag_sec = static_cast<double>(now().nanoseconds() - stamp_ns) / 1e9;
+    if (lag_sec > max_odom_lag_sec_) {
+        max_odom_lag_sec_ = lag_sec;
+    }
 }
 
 void LocalizationNode::on_external_pose(
@@ -398,8 +414,10 @@ void LocalizationNode::on_align_timer() {
 
     const auto profile_align_begin = std::chrono::steady_clock::now();
     const auto result = aligner_->align(cloud, map_.cloud, guess);
+    // 配准耗时总是量：profile 只是「打印不打印」的开关，诊断计数与它无关（decision.md D29）。
+    const double align_ms = elapsed_ms(profile_align_begin);
     if (profile_enabled_) {
-        profile_.align_ms += elapsed_ms(profile_align_begin);
+        profile_.align_ms += align_ms;
         ++profile_.samples;
         maybe_flush_profile(now().nanoseconds());
     }
@@ -432,6 +450,10 @@ void LocalizationNode::on_align_timer() {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    ++align_runs_;
+    if (align_ms > max_align_ms_) {
+        max_align_ms_ = align_ms;
+    }
     foray::localization::RegistrationSample sample;
     sample.stamp_ns = stamp_ns;
     sample.valid = result.inlier_ratio > 0.0;
@@ -552,6 +574,19 @@ void LocalizationNode::publish_tf() {
     message.transform.rotation.z = quaternion.z();
     message.transform.rotation.w = quaternion.w();
     tf_broadcaster_->sendTransform(message);
+    ++tf_published_;
+}
+
+LocalizationNode::Diagnostics LocalizationNode::diagnostics() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Diagnostics snapshot;
+    snapshot.odom_received = odom_received_.load(std::memory_order_relaxed);
+    snapshot.odom_processed = odom_processed_;
+    snapshot.max_odom_lag_sec = max_odom_lag_sec_;
+    snapshot.align_runs = align_runs_;
+    snapshot.max_align_ms = max_align_ms_;
+    snapshot.tf_published = tf_published_;
+    return snapshot;
 }
 
 void LocalizationNode::on_state_timer() {
