@@ -10,6 +10,7 @@
 
 #include <Eigen/Core>
 
+#include <memory>
 #include <vector>
 
 namespace foray::localization_map {
@@ -39,11 +40,30 @@ class ResidualClusterer {
   public:
     explicit ResidualClusterer(ResidualClustererConfig config = ResidualClustererConfig{});
 
+    /// 预建 target 的地图哈希格。整图建格是这条 10 Hz 路径上最贵的固定开销，
+    /// 而它只依赖地图、不依赖当前帧，没有理由每帧重建（decision.md D35）。
+    /// 换地图后必须重新调用：这里不做「目标变了就自动重建」的猜测，
+    /// 因为静默地用旧地图判残差会把整片新地图报成动态物体。
+    void set_target(const PointCloud& target);
+
+    /// 是否已有可用的 target 索引。
+    bool has_target() const { return target_grid_ != nullptr; }
+
+    /// 用 set_target 建好的索引做聚类；未设置 target 时返回空。
+    std::vector<ResidualCluster> cluster(const PointCloud& source) const;
+
     /// 在 target 地图上为 source 的每个点找最近邻，残差点做欧氏聚类。
+    /// 每次调用都会重建 target 索引，只在测试与一次性调用里使用。
     std::vector<ResidualCluster> cluster(const PointCloud& source, const PointCloud& target) const;
 
   private:
+    struct TargetGrid;
+
+    std::vector<ResidualCluster> cluster_against(const PointCloud& source,
+                                                 const TargetGrid& grid) const;
+
     ResidualClustererConfig config_;
+    std::shared_ptr<const TargetGrid> target_grid_;
 };
 
 } // namespace foray::localization_map

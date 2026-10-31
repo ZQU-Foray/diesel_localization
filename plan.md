@@ -59,8 +59,10 @@
 - [ ] **M10 审计整改 L1–L18**（`audit/tasks/02-foray_localization.md`，原则见 `decision.md` D28）
   - [x] **测试基建**：节点实现进库、可注入配准后端、`Diagnostics` 计数
     （`decision.md` D29）
-  - [ ] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
-    odom 超时拆成「没收到」与「处理不及」两种 reason
+  - [x] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
+    odom 超时拆成「没收到」与「处理不及」两种 reason（`decision.md` D30/D35；
+    回执：注入 200 ms 后端 6 s，父提交停在 `no valid registration`、积压 201.4 ms、
+    状态 27.5 Hz；现为 `LOST=0`、积压 11.8 ms、状态 50.0 Hz）
   - [ ] **P1 L2/L3/L4/L5/L9/L10**：地图失败转 LOST 且 TF 只放行 `OK`/`DEGRADED`、
     `child_frame_id` 校验与 TF 补转换、位姿源仲裁接线（`select_pose_source`）、
     参数声明顺序、配准量测锁内快照、PCD 加载上限与异常安全

@@ -1055,3 +1055,76 @@ Consequences:
   回调组划分是否真的解开了阻塞。
 
 状态：已实现（2026-10-31）。
+
+## D30 执行器与回调组划分：谁阻塞谁独占一组
+
+Context: L1 的故障链不是「配准慢」，而是**阻塞位置错了**。父提交的
+`localization_node_main.cpp` 用 `rclcpp::spin`（单线程），且所有订阅、定时器、服务都在节点的
+默认回调组（`MutuallyExclusive`）里：5 Hz GICP 单次上百毫秒，同期 200 Hz 的
+`/aft_mapped_to_init` 回调根本拿不到执行权，`localization_node.cpp` 里的 `QoS(50)` 队列在
+0.25 s 内被打满、`last_odom_ns_` 停止推进，`health.cpp` 于是判 `odom_age > odom_timeout_sec`，
+把「本节点算得太慢」写成 `odometry timeout` 并转 LOST、TF 停发。
+实测（注入 200 ms 后端、5 Hz 配准 / 50 Hz 状态 / 200 Hz 里程计，6 s）：
+
+| 指标 | 父提交 | 本决定之后 |
+|---|---|---|
+| 进入 `OK` | 否（停在 `no valid registration during initialization`） | 是 |
+| 里程计积压峰值 | 201.4 ms | 11.8 ms |
+| 实际配准次数 / 6 s | 15 | 30 |
+| 状态发布频率 | 165 条 / 6 s（27.5 Hz） | 300 条 / 6 s（50 Hz） |
+
+Decision:
+1. 入口换 `MultiThreadedExecutor`，线程数 `clamp(hardware_concurrency, 2, 4)`。
+2. 回调组按「谁阻塞谁独占」划分，六个组全部 `MutuallyExclusive`：`odom_group_`
+   （odometry + external_pose）、`cloud_group_`（点云）、`align_group_`（配准定时器）、
+   `obstacle_group_`（聚类定时器）、`publish_group_`（state + TF 定时器）、
+   `service_group_`（重定位服务）。
+3. **组间并行只解决「互不阻塞」**：共享状态仍由唯一的 `mutex_` 仲裁，配准、聚类、TF 查询
+   一律在锁外执行；加锁窗口只做「取快照 / 写结果」。
+4. 聚类索引随地图建一次：`ResidualClusterer::set_target()` 在 `load_map()` 里调用，
+   10 Hz 的 `on_obstacle_timer` 改调 `cluster(source)`（见 D35）。
+5. `HealthMonitor::update()` 增加 `odom_backlog_sec`，`LOST` 的 `reason` 拆成三支：
+   `no odometry received` / `odometry stale: Xs (no samples)` /
+   `odometry stale: Xs (processing backlog Xs)`。判据是「窗口内里程计帧的最大排队时长」
+   （`Diagnostics::max_odom_lag_sec`，节点时钟同域）是否超过 `0.5 × odom_timeout_sec`。
+
+Reason: 报错文案是现场的第一个分诊器。同一句 `odometry timeout` 同时覆盖「传感器没数据」
+与「你算得太慢」，会让排查方向系统性地指向驱动而不是本节点——L1 之所以从 5 Hz GICP 一路
+演化成「LOST 后靠重定位恢复」，就是因为每次都归因到里程计。
+
+Alternatives: 调大 `odom_timeout_sec`；给配准降频；把配准搬到独立线程 + 自己管队列。
+Rejected: 调大超时只是把误诊推后（L1 的验收就是不许出现该误诊）；降配准频率拿定位精度换
+健康状态；自建线程要复制 executor 的信号、生命周期与取消语义，而 rclcpp 已经有回调组。
+
+Consequences:
+- 回调组只是「不互相阻塞」。任何在回调里做的长耗时都会提高对应组被占用期间的排队深度，
+  新增慢回调必须同时说明它属于哪个组，或新增一个组。
+- `Diagnostics::max_odom_lag_sec` 是窗口峰值、不自动清零，现场读数应配合 `profile_enabled_`
+  的 5 s 窗口日志一起看。
+- 状态机仍然只在「没有新鲜里程计」时判 LOST：本决定只改文案与诊断，不改失效判据。
+
+状态：已实现（2026-10-31），回执见 `plan.md` M10 与提交 `L1`。
+
+## D35 聚类索引生命周期：与地图同生共死，换图必须显式重设
+
+Context: `ResidualClusterer::cluster(source, target)` 每次调用都遍历整张先验地图建哈希格
+（`residual_clusterer.cpp` 原 `:55-59`），而 `on_obstacle_timer` 以 10 Hz 调它。这份索引只依赖
+地图、不依赖当前帧，与 `map_index_` / `map_normals_`（D25）是同一类开销。
+
+Decision:
+1. `ResidualClusterer` 增加 `set_target(const PointCloud&)` 与 `cluster(const PointCloud&)`，
+   索引（点 + 哈希格）一起存进内部 `TargetGrid`，由 `load_map()` 在装载完地图后**只调一次**。
+2. 换地图不会自动重建索引：`set_target` 是显式动作，`has_target()` 只是查询。
+   旧的两参数 `cluster(source, target)` 保留，供测试与一次性调用。
+3. `TargetGrid` 持有目标点云的副本，而不是指向 `map_.cloud` 的指针：这样「用 A 地图的格子
+   查 B 地图的点」不可能编译通过，也不会因为 `map_ = std::move(map)` 变成悬垂引用。
+
+Reason: 静默复用旧地图判定残差，会把整片新地图报成动态物体，而故障形态是「障碍物突然变多」，
+与传感器噪声不可区分。显式 `set_target` 让这条约束在调用点上可见。
+
+Consequences:
+- 地图点云多存一份（`map_voxel_leaf_m` 降采样后，8 万点约 2.6 MB）。这是不用悬垂指针换来的。
+- **硬约束**：`load_map()` 是目前唯一的地图装载点；将来若增加换图/热更新路径，必须同时调
+  `set_target` 与重建 `map_index_` / `map_normals_`，否则聚类用的是旧地图。
+
+状态：已实现（2026-10-31）。

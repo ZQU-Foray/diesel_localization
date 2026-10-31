@@ -234,6 +234,10 @@ source: "RMUL 2027 field survey"
 | `DEGRADED` | 残差或内点率越界，但仍在 `degraded_*` 内；≤ 200 ms 公告 | `true` | 降级消费，规划减速 |
 | `LOST` | 连续 `lost_timeout_sec` 无有效配准，或 odom 断流 > `odom_timeout_sec`、点云断流 > `lidar_timeout_sec` | `false` | 停止消费，显式失效 |
 
+`LOST` 的 `reason` 区分三种成因：`no odometry received`（从未收到里程计）、
+`odometry stale: <age>s (no samples)`（真的没有新帧）、
+`odometry stale: <age>s (processing backlog <lag>s)`（帧在队列里积压，即本节点处理不及）。
+
 `LocalizationState` 的字段：`header`（`stamp` 为状态快照时刻）、`pose`（`map → base_frame`）、
 **`pose_valid`**、`confidence`、`age_sec`（距上次有效配准）、`state`、`source`、`reason`。
 

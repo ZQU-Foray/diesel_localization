@@ -70,7 +70,15 @@ class HealthMonitor {
 
     /// 输入最近一帧配准结果、当前时间与最近一次里程计时间。
     /// `last_odom_ns == 0` 表示尚未收到里程计。
-    HealthStatus update(const RegistrationSample& sample, Timestamp now_ns, Timestamp last_odom_ns);
+    /// `odom_backlog_sec` 是最近一个窗口内「里程计帧在队列里等了多久」的最大值：
+    /// 它把「根本没有里程计」和「里程计来了但 executor 忙着配准、没人处理」区分开，
+    /// 否则两种完全不同的故障会共用同一句 reason（decision.md D30）。
+    HealthStatus update(const RegistrationSample& sample, Timestamp now_ns, Timestamp last_odom_ns,
+                        double odom_backlog_sec = 0.0);
+
+    /// 显式进入 LOST，幂等。用于没有配准帧可喂的失效（地图没加载成功等）：
+    /// 这类故障在 update() 里永远进不来，健康状态会永久停在 INITIALIZING。
+    HealthStatus enter_lost(const std::string& reason, Timestamp now_ns);
 
     /// 显式重定位：回到 INITIALIZING，清空去抖计数。
     void reset();

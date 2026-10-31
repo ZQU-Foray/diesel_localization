@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
+#include <string>
 
 namespace foray::localization {
 namespace {
@@ -41,6 +43,23 @@ double clamp01(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
 
+/// 里程计失效有三种完全不同的成因，必须能被现场区分开（decision.md D30）：
+/// 从来没收到过 / 收到过但现在长时间没新帧 / 帧在队列里积压着没人处理。
+/// 第三种是「本节点算得太慢」，把它写成 odometry timeout 会把排查方向直接带偏。
+std::string odom_failure_reason(double odom_age_sec, double odom_backlog_sec, double timeout_sec) {
+    if (!std::isfinite(odom_age_sec)) {
+        return "no odometry received";
+    }
+    char text[128];
+    if (odom_backlog_sec > 0.5 * timeout_sec) {
+        std::snprintf(text, sizeof(text), "odometry stale: %.3fs (processing backlog %.3fs)",
+                      odom_age_sec, odom_backlog_sec);
+    } else {
+        std::snprintf(text, sizeof(text), "odometry stale: %.3fs (no samples)", odom_age_sec);
+    }
+    return text;
+}
+
 } // namespace
 
 const char* to_string(HealthState state) {
@@ -70,6 +89,18 @@ const char* to_string(PoseSource source) {
 }
 
 HealthMonitor::HealthMonitor(HealthConfig config) : config_(config) {}
+
+HealthStatus HealthMonitor::enter_lost(const std::string& reason, Timestamp now_ns) {
+    if (start_ns_ == 0) {
+        start_ns_ = now_ns;
+        state_since_ns_ = now_ns;
+    }
+    if (state_ != HealthState::kLost) {
+        transition(HealthState::kLost, reason, now_ns);
+    }
+    last_confidence_ = 0.0;
+    return snapshot(now_ns);
+}
 
 void HealthMonitor::reset() {
     state_ = HealthState::kInitializing;
@@ -115,7 +146,7 @@ HealthStatus HealthMonitor::snapshot(Timestamp now_ns) const {
 }
 
 HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp now_ns,
-                                   Timestamp last_odom_ns) {
+                                   Timestamp last_odom_ns, double odom_backlog_sec) {
     if (start_ns_ == 0) {
         start_ns_ = now_ns;
         state_since_ns_ = now_ns;
@@ -125,7 +156,9 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
     const double odom_age = age_seconds(now_ns, last_odom_ns);
     if (!std::isfinite(odom_age) || odom_age > config_.odom_timeout_sec) {
         if (state_ != HealthState::kLost) {
-            transition(HealthState::kLost, "odometry timeout", now_ns);
+            transition(HealthState::kLost,
+                       odom_failure_reason(odom_age, odom_backlog_sec, config_.odom_timeout_sec),
+                       now_ns);
         }
         last_confidence_ = 0.0;
         return snapshot(now_ns);

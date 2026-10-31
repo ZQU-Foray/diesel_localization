@@ -121,6 +121,17 @@ class LocalizationNode : public rclcpp::Node {
         external_pose_sub_;
     rclcpp::Service<foray_localization_ros::srv::Relocalize>::SharedPtr relocalize_srv_;
 
+    /// 回调组按「谁阻塞谁」划分（decision.md D30）：配准与聚类的耗时可到百毫秒级，
+    /// 它们必须和里程计、发布这类毫秒级、对时序敏感的回调分在不同组里，
+    /// 否则 executor 再多线程也只能排队跑，里程计会被配准饿死。
+    /// 组间并行只解决「互不阻塞」，共享状态仍由 `mutex_` 唯一仲裁。
+    rclcpp::CallbackGroup::SharedPtr odom_group_;
+    rclcpp::CallbackGroup::SharedPtr cloud_group_;
+    rclcpp::CallbackGroup::SharedPtr align_group_;
+    rclcpp::CallbackGroup::SharedPtr obstacle_group_;
+    rclcpp::CallbackGroup::SharedPtr publish_group_;
+    rclcpp::CallbackGroup::SharedPtr service_group_;
+
     rclcpp::TimerBase::SharedPtr state_timer_;
     rclcpp::TimerBase::SharedPtr tf_timer_;
     rclcpp::TimerBase::SharedPtr align_timer_;

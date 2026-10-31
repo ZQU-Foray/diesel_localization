@@ -42,21 +42,56 @@ CellKey cell_of(const Eigen::Vector3f& point, double size) {
 
 } // namespace
 
+/// target 的点与哈希格绑在一起：只存下标、靠外部再传一遍点云，
+/// 会让「用 A 地图的格子查 B 地图的点」变成一个能编译的静默错误。
+struct ResidualClusterer::TargetGrid {
+    double cell{1.0};
+    PointCloud points;
+    std::unordered_map<CellKey, std::vector<std::uint32_t>, CellHash> cells;
+};
+
 ResidualClusterer::ResidualClusterer(ResidualClustererConfig config) : config_(config) {}
+
+void ResidualClusterer::set_target(const PointCloud& target) {
+    auto grid = std::make_shared<TargetGrid>();
+    grid->cell = std::max(1e-3, config_.residual_threshold_m);
+    grid->points = target;
+    grid->cells.reserve(target.points.size());
+    for (std::uint32_t i = 0; i < target.points.size(); ++i) {
+        grid->cells[cell_of(target.points[i], grid->cell)].push_back(i);
+    }
+    target_grid_ = std::move(grid);
+}
+
+std::vector<ResidualCluster> ResidualClusterer::cluster(const PointCloud& source) const {
+    if (target_grid_ == nullptr) {
+        return {};
+    }
+    return cluster_against(source, *target_grid_);
+}
 
 std::vector<ResidualCluster> ResidualClusterer::cluster(const PointCloud& source,
                                                         const PointCloud& target) const {
+    TargetGrid grid;
+    grid.cell = std::max(1e-3, config_.residual_threshold_m);
+    grid.points = target;
+    grid.cells.reserve(target.points.size());
+    for (std::uint32_t i = 0; i < target.points.size(); ++i) {
+        grid.cells[cell_of(target.points[i], grid.cell)].push_back(i);
+    }
+    return cluster_against(source, grid);
+}
+
+std::vector<ResidualCluster> ResidualClusterer::cluster_against(const PointCloud& source,
+                                                                const TargetGrid& grid) const {
     std::vector<ResidualCluster> clusters;
-    if (source.empty() || target.empty() || config_.cluster_tolerance_m <= 0.0) {
+    if (source.empty() || grid.points.empty() || config_.cluster_tolerance_m <= 0.0) {
         return clusters;
     }
 
-    const double query_cell = std::max(1e-3, config_.residual_threshold_m);
-    std::unordered_map<CellKey, std::vector<std::uint32_t>, CellHash> target_index;
-    target_index.reserve(target.points.size());
-    for (std::uint32_t i = 0; i < target.points.size(); ++i) {
-        target_index[cell_of(target.points[i], query_cell)].push_back(i);
-    }
+    const double query_cell = grid.cell;
+    const auto& target_index = grid.cells;
+    const auto& target = grid.points;
 
     std::vector<Eigen::Vector3f> residual_points;
     std::vector<double> residual_distances;

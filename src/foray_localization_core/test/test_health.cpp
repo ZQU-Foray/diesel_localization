@@ -104,12 +104,58 @@ TEST(HealthMonitor, LostAfterNoValidRegistration) {
 
 TEST(HealthMonitor, OdomTimeoutIsLost) {
     HealthMonitor monitor(test_config());
-    const Timestamp now = kSecond;
-    const HealthStatus status = monitor.update(make_sample(now), now, now - kSecond);
+    // 两个周期过去、里程计停在更早的那一帧：这是「收到过但现在没有新帧」。
+    const Timestamp now = 2 * kSecond;
+    // 原来的断言是 reason == "odometry timeout"。那句话把「我算太慢、帧还在队列里」
+    // 和「里程计真的没数据」写成同一句，现场照着它去查里程计驱动是查不到的（L1/Q1）。
+    const HealthStatus status = monitor.update(make_sample(now), now, kSecond);
 
     EXPECT_EQ(status.state, HealthState::kLost);
     EXPECT_DOUBLE_EQ(status.confidence, 0.0);
-    EXPECT_EQ(status.reason, "odometry timeout");
+    EXPECT_EQ(status.reason, "odometry stale: 1.000s (no samples)");
+}
+
+TEST(HealthMonitor, OdomBacklogIsReportedAsProcessingBacklog) {
+    HealthMonitor monitor(test_config());
+    const Timestamp now = kSecond;
+    // 里程计新鲜但队列里积压了 0.45 s（> 0.5 * odom_timeout_sec）：说明卡的是本节点，
+    // 不是传感器。这是 L1 那条「odometry timeout」误诊的直接修复点（decision.md D30）。
+    const HealthStatus status = monitor.update(make_sample(now), now, now - 4 * kSecond / 5, 0.45);
+
+    EXPECT_EQ(status.state, HealthState::kLost);
+    EXPECT_EQ(status.reason, "odometry stale: 0.800s (processing backlog 0.450s)");
+}
+
+TEST(HealthMonitor, SmallBacklogDoesNotChangeTheReason) {
+    HealthMonitor monitor(test_config());
+    const Timestamp now = kSecond;
+    // 积压只有 50 ms：仍属正常抖动，不该被写成 backlog 故障。
+    const HealthStatus status = monitor.update(make_sample(now), now, now - 4 * kSecond / 5, 0.05);
+
+    EXPECT_EQ(status.reason, "odometry stale: 0.800s (no samples)");
+}
+
+TEST(HealthMonitor, EnterLostIsIdempotentAndSticky) {
+    HealthMonitor monitor(test_config());
+    const Timestamp start = kSecond;
+    EXPECT_EQ(monitor.update(make_sample(start), start, start).state, HealthState::kInitializing);
+
+    // 地图加载失败这类故障没有配准帧可喂，只能显式置 LOST（L2）。
+    const HealthStatus lost = monitor.enter_lost("map unavailable: manifest missing", start);
+    EXPECT_EQ(lost.state, HealthState::kLost);
+    EXPECT_EQ(lost.reason, "map unavailable: manifest missing");
+    EXPECT_DOUBLE_EQ(lost.confidence, 0.0);
+
+    // 再置一次不许改掉第一次的 reason：先到的成因才是现场要看的那个。
+    const HealthStatus again = monitor.enter_lost("another reason", start + kSecond / 10);
+    EXPECT_EQ(again.state, HealthState::kLost);
+    EXPECT_EQ(again.reason, "map unavailable: manifest missing");
+
+    // LOST 粘滞：即使随后喂进合格样本，也只能靠 reset() 恢复。
+    EXPECT_EQ(
+        monitor.update(make_sample(start + kSecond / 5), start + kSecond / 5, start + kSecond / 5)
+            .state,
+        HealthState::kLost);
 }
 
 TEST(HealthMonitor, SmallTimestampInversionIsTolerated) {
@@ -129,9 +175,11 @@ TEST(HealthMonitor, LargeTimestampInversionStillTimesOut) {
     HealthMonitor monitor(test_config());
     const Timestamp start = kSecond;
     // 反序 500 ms 超出容差，仍按时间基准异常处理。
+    // 时间戳反序超出容差时 odom_age 是 +inf，reason 必须说「根本没收到」而不是 stale：
+    // 队列表里那帧的时间戳在「未来」，用它算出的积压没有意义。
     const HealthStatus status = monitor.update(make_sample(start), start, start + kSecond / 2);
     EXPECT_EQ(status.state, HealthState::kLost);
-    EXPECT_EQ(status.reason, "odometry timeout");
+    EXPECT_EQ(status.reason, "no odometry received");
 }
 
 TEST(PoseSourceSelection, FollowsPolicy) {

@@ -143,6 +143,16 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     const auto external_topic =
         declare_parameter<std::string>("external_pose_topic", "/localization/external_pose");
 
+    // 回调组按「谁阻塞谁」划分（decision.md D30）：配准与聚类能吃掉上百毫秒，
+    // 若与 200 Hz 的里程计挤在一个 MutuallyExclusive 组里，即使 executor 是多线程的，
+    // 里程计也只能等配准跑完——那正是 L1 里 odom 队列被打满、最后误报断流的成因。
+    odom_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    cloud_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    align_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    obstacle_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    publish_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    service_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
     const auto state_qos = rclcpp::QoS(10).reliable().transient_local();
     const auto map_qos = rclcpp::QoS(1).reliable().transient_local();
     const auto obstacle_qos = rclcpp::QoS(10).reliable();
@@ -155,36 +165,47 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
         "/localization/dynamic_obstacles", obstacle_qos);
 
     if (policy_ != foray::localization::PoseSourcePolicy::kExternal) {
+        rclcpp::SubscriptionOptions cloud_options;
+        cloud_options.callback_group = cloud_group_;
         cloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
             cloud_topic, rclcpp::SensorDataQoS(),
-            std::bind(&LocalizationNode::on_cloud, this, std::placeholders::_1));
+            std::bind(&LocalizationNode::on_cloud, this, std::placeholders::_1), cloud_options);
+        rclcpp::SubscriptionOptions odom_options;
+        odom_options.callback_group = odom_group_;
         odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
             odom_topic, rclcpp::QoS(50),
-            std::bind(&LocalizationNode::on_odometry, this, std::placeholders::_1));
+            std::bind(&LocalizationNode::on_odometry, this, std::placeholders::_1), odom_options);
     }
     if (policy_ != foray::localization::PoseSourcePolicy::kLidar) {
+        rclcpp::SubscriptionOptions external_options;
+        external_options.callback_group = odom_group_;
         external_pose_sub_ = create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
             external_topic, rclcpp::QoS(20),
-            std::bind(&LocalizationNode::on_external_pose, this, std::placeholders::_1));
+            std::bind(&LocalizationNode::on_external_pose, this, std::placeholders::_1),
+            external_options);
     }
 
     relocalize_srv_ = create_service<foray_localization_ros::srv::Relocalize>(
-        "/localization/relocalize", std::bind(&LocalizationNode::on_relocalize, this,
-                                              std::placeholders::_1, std::placeholders::_2));
+        "/localization/relocalize",
+        std::bind(&LocalizationNode::on_relocalize, this, std::placeholders::_1,
+                  std::placeholders::_2),
+        rmw_qos_profile_services_default, service_group_);
 
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
     load_map();
 
-    state_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / std::max(1.0, state_rate)),
-                                     std::bind(&LocalizationNode::on_state_timer, this));
+    state_timer_ =
+        create_wall_timer(std::chrono::duration<double>(1.0 / std::max(1.0, state_rate)),
+                          std::bind(&LocalizationNode::on_state_timer, this), publish_group_);
     tf_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / std::max(1.0, tf_rate)),
-                                  std::bind(&LocalizationNode::on_tf_timer, this));
-    align_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / std::max(1.0, align_rate)),
-                                     std::bind(&LocalizationNode::on_align_timer, this));
+                                  std::bind(&LocalizationNode::on_tf_timer, this), publish_group_);
+    align_timer_ =
+        create_wall_timer(std::chrono::duration<double>(1.0 / std::max(1.0, align_rate)),
+                          std::bind(&LocalizationNode::on_align_timer, this), align_group_);
     obstacle_timer_ =
         create_wall_timer(std::chrono::duration<double>(1.0 / std::max(1.0, obstacle_rate)),
-                          std::bind(&LocalizationNode::on_obstacle_timer, this));
+                          std::bind(&LocalizationNode::on_obstacle_timer, this), obstacle_group_);
 }
 
 void LocalizationNode::load_map() {
@@ -217,6 +238,10 @@ void LocalizationNode::load_map() {
         RCLCPP_INFO(get_logger(), "可观测性分析已启用: 阈值=%.3f 法向覆盖=%.1f%%",
                     observability_ratio_threshold_, 100.0 * map_normals_->coverage());
     }
+    // 残差聚类的 target 哈希格同样只依赖地图（decision.md D35）：这里是唯一的地图装载点，
+    // 所以也只在这里重建一次，10 Hz 的聚类路径直接复用。
+    clusterer_.set_target(map_.cloud);
+
     RCLCPP_INFO(get_logger(), "先验地图已加载: version=%s pcd=%zu grid=%dx%d",
                 map_.manifest.version.c_str(), map_.cloud.size(), map_.grid.width,
                 map_.grid.height);
@@ -360,9 +385,8 @@ void LocalizationNode::on_external_pose(
     has_odom_ = true;
     last_valid_ns_ = stamp_ns;
     active_source_ = foray::localization::PoseSource::kExternalOdom;
-    health_status_ = health_.update(sample, stamp_ns, stamp_ns);
+    health_status_ = health_.update(sample, stamp_ns, stamp_ns, max_odom_lag_sec_);
 }
-
 
 void LocalizationNode::maybe_flush_profile(std::int64_t now_ns) {
     if (!profile_enabled_ || profile_.samples == 0) {
@@ -466,7 +490,8 @@ void LocalizationNode::on_align_timer() {
     // 健康评估以当前时间进行：odom_ns 是最近一次里程计时间戳，更新快于点云，
     // 与点云时间戳相比会天然反序，若直接传入会误判为里程计断流。
     const std::int64_t eval_ns = now().nanoseconds();
-    health_status_ = health_.update(sample, eval_ns, odom_ns);
+    // 把里程计积压一并交给状态机：同一句「odom 过期」必须能区分「没数据」和「来不及处理」。
+    health_status_ = health_.update(sample, eval_ns, odom_ns, max_odom_lag_sec_);
 
     // LOST 粘滞：只有人工重定位 reset 后才重新接受配准结果。
     if (health_status_.state != foray::localization::HealthState::kLost &&
@@ -516,7 +541,7 @@ void LocalizationNode::publish_state() {
         sample.valid = last_odom_ns_ > 0;
         sample.mean_residual_m = 0.0;
         sample.inlier_ratio = sample.valid ? 1.0 : 0.0;
-        health_status_ = health_.update(sample, now_ns, last_odom_ns_);
+        health_status_ = health_.update(sample, now_ns, last_odom_ns_, max_odom_lag_sec_);
     } else if (has_odom_ && health_config_.odom_timeout_sec > 0.0 &&
                static_cast<double>(now_ns - last_odom_ns_) / 1e9 >
                    health_config_.odom_timeout_sec) {
@@ -525,7 +550,7 @@ void LocalizationNode::publish_state() {
         sample.valid = false;
         sample.mean_residual_m = 0.0;
         sample.inlier_ratio = 0.0;
-        health_status_ = health_.update(sample, now_ns, last_odom_ns_);
+        health_status_ = health_.update(sample, now_ns, last_odom_ns_, max_odom_lag_sec_);
     } else if (has_odom_ && health_config_.lidar_timeout_sec > 0.0 &&
                (last_cloud_rx_ns_ <= 0 || static_cast<double>(now_ns - last_cloud_rx_ns_) / 1e9 >
                                               health_config_.lidar_timeout_sec)) {
@@ -537,7 +562,7 @@ void LocalizationNode::publish_state() {
         sample.valid = false;
         sample.mean_residual_m = 0.0;
         sample.inlier_ratio = 0.0;
-        health_status_ = health_.update(sample, now_ns, last_odom_ns_);
+        health_status_ = health_.update(sample, now_ns, last_odom_ns_, max_odom_lag_sec_);
     }
 
     foray::localization::Pose3D pose;
@@ -615,7 +640,7 @@ void LocalizationNode::on_obstacle_timer() {
         return;
     }
     const auto in_map = foray::localization_map::transform_points(cloud, current_map_to_base);
-    const auto clusters = clusterer_.cluster(in_map, map_.cloud);
+    const auto clusters = clusterer_.cluster(in_map);
     obstacle_pub_->publish(to_msg_obstacles(clusters, map_frame_, stamp_ns));
 }
 
