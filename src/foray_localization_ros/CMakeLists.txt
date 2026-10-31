@@ -105,6 +105,14 @@ if(BUILD_TESTING)
         TIMEOUT 180
     )
     target_link_libraries(test_localization_node ${PROJECT_NAME}_lib)
+
+    # 地图失败用例单独成文件：它们不依赖慢配准，跑得比 L1 的 12 s 用例快得多。
+    ament_add_gtest(
+        test_localization_node_map_errors test/test_localization_node_map_errors.cpp
+        SKIP_LINKING_MAIN_LIBRARIES
+        TIMEOUT 120
+    )
+    target_link_libraries(test_localization_node_map_errors ${PROJECT_NAME}_lib)
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)

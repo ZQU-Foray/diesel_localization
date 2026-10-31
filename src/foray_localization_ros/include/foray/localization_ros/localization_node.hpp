@@ -111,6 +111,9 @@ class LocalizationNode : public rclcpp::Node {
     ProfileTotals profile_;
 
     void maybe_flush_profile(std::int64_t now_ns);
+    /// 把「地图不可用」写成一条显式事实：记下原因并把健康状态压进 `LOST`。
+    /// 只被 `load_map()` 的失败分支调用（decision.md D36）。
+    void mark_map_unavailable(const std::string& reason);
 
     rclcpp::Publisher<foray_localization_ros::msg::LocalizationState>::SharedPtr state_pub_;
     rclcpp::Publisher<foray_localization_ros::msg::MapMeta>::SharedPtr map_meta_pub_;
@@ -143,6 +146,9 @@ class LocalizationNode : public rclcpp::Node {
 
     foray::localization_map::PriorMap map_;
     bool has_map_{false};
+    /// 地图不可用的原因（空 = 地图正常）。非空时健康状态被锁在 `LOST`，
+    /// `map → odom` 一帧都不发：没有地图就没有配准，任何位姿都是无源的（decision.md D36）。
+    std::string map_error_;
     /// 目标侧近邻索引与法向缓存，随地图生命周期只建一次（decision.md D25）。
     /// 两者都持有 `map_.cloud` 的引用，必须在 `map_` 之后声明、在 relocad 时整体重建。
     std::shared_ptr<foray::localization_map::PointCloudIndex> map_index_;

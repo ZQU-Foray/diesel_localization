@@ -1128,3 +1128,38 @@ Consequences:
   `set_target` 与重建 `map_index_` / `map_normals_`，否则聚类用的是旧地图。
 
 状态：已实现（2026-10-31）。
+
+## D36 地图不可用即 `LOST`，TF 闸门只放行 `OK` / `DEGRADED`
+
+Context: 父提交的 `load_map()` 三条失败路径（`map_manifest` 未设置、`load_prior_map`
+失败、点数超限）都只 `RCLCPP_ERROR` 就 `return`：`has_map_` 保持 `false`，
+`on_align_timer()` 在 `!has_map_` 处提前返回、从不喂健康状态机，于是状态永远停在
+`INITIALIZING`；而 `publish_tf()` 的闸门写的是「`state == kLost || !has_odom_` 就返回」，
+`INITIALIZING` 不在其中——一个没有地图、没有任何一帧配准证据的节点，照样以 20 Hz 广播
+`map → odom`，内容就是构造时的恒等矩阵。
+
+Decision:
+1. 三条失败路径统一走 `mark_map_unavailable(reason)`：记下 `map_error_`，把健康状态压进
+   `LOST`，reason 以 `map unavailable:` 开头（后接具体成因）。
+2. `publish_state()` 在 `!has_map_` 时每拍继续喂 `enter_lost()`：状态机的「变坏」不能依赖
+   「某个回调恰好运行」，否则回调越少、状态越健康——正好反过来。
+3. `publish_tf()` 闸门改成**只放行 `kOk` / `kDegraded`**。比 README 的「LOST 停发」
+   更紧：只有被配准证明过的状态才允许发布，`INITIALIZING` 一律不发。
+
+Reason: 健康状态的唯一价值是「下游能据此决定要不要用这个位姿」。发一条恒等矩阵的
+`map → odom`，下游拿到的是一条**语法正确、语义为零**的变换，而且它和真值长得一模一样——
+这正是审计 §4.1 说的静默降级。改成「一帧都不发」，下游的 TF 查询会直接失败，故障在
+第一秒就可见。
+
+Alternatives: 发恒等矩阵 + `WARN`（审计明令禁止）；把 `map → odom` 的发布挪到
+`on_align_timer()` 里（改动面更大，且 TF 频率被配准频率绑死）。
+Rejected: 前者把「没有地图」降级成日志；后者会把 20 Hz TF 变成 5 Hz，违反 README 接口表。
+
+Consequences:
+- 没有地图时 `/tf` 上根本没有 `map → odom`，`foray_navigation` 的启动顺序必须容忍这一点
+  （它本来就要求先判 `pose_valid`）。
+- 地图加载失败后节点不再「看起来在正常工作」：这是有意为之，属于 D28 ①的「响亮地失败」。
+- `load_map()` 只在构造期调用，`mark_map_unavailable()` 因此不需要额外的「重试/恢复」路径；
+  若将来加地图热重载，必须同时清 `map_error_` 并 `health_.reset()`。
+
+状态：已实现（2026-10-31）。

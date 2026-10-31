@@ -211,6 +211,7 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
 void LocalizationNode::load_map() {
     if (map_manifest_.empty()) {
         RCLCPP_ERROR(get_logger(), "map_manifest 未设置，定位节点无法启动地图配准");
+        mark_map_unavailable("map_manifest 未设置");
         return;
     }
     foray::localization_map::PriorMap map;
@@ -218,6 +219,7 @@ void LocalizationNode::load_map() {
         foray::localization_map::load_prior_map(map_manifest_, &map, verify_map_hashes_);
     if (!result.ok) {
         RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", result.error.c_str());
+        mark_map_unavailable("加载先验地图失败: " + result.error);
         return;
     }
     if (map_voxel_leaf_m_ > 0.0) {
@@ -247,6 +249,16 @@ void LocalizationNode::load_map() {
                 map_.grid.height);
 
     map_meta_pub_->publish(to_msg_map_meta(map_.manifest, now().nanoseconds()));
+}
+
+void LocalizationNode::mark_map_unavailable(const std::string& reason) {
+    // 失败必须变成一条可被下游读到的事实，而不是一行日志：父提交上这里只打 ERROR 就
+    // return，健康状态停在 `INITIALIZING`、`publish_tf()` 的闸门又只挡 `LOST`，
+    // 于是没有地图的节点照样以 20 Hz 广播单位阵 `map → odom`（decision.md D36）。
+    std::lock_guard<std::mutex> lock(mutex_);
+    map_error_ = reason;
+    has_map_ = false;
+    health_status_ = health_.enter_lost("map unavailable: " + reason, now().nanoseconds());
 }
 
 void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud) {
@@ -534,8 +546,13 @@ void LocalizationNode::on_align_timer() {
 void LocalizationNode::publish_state() {
     std::lock_guard<std::mutex> lock(mutex_);
     const std::int64_t now_ns = now().nanoseconds();
-    // 外部模式没有配准帧驱动，按节拍喂健康状态；里程计断流时任何模式都必须转 LOST。
-    if (policy_ == foray::localization::PoseSourcePolicy::kExternal) {
+    // 地图不可用是最靠前的成因：没有地图就没有配准，`on_align_timer()` 会在 `!has_map_`
+    // 处提前返回、从不喂健康状态机，所以必须在这里按节拍显式喂 LOST（decision.md D36）。
+    if (!has_map_) {
+        health_status_ = health_.enter_lost(
+            "map unavailable: " + (map_error_.empty() ? std::string("unknown") : map_error_),
+            now_ns);
+    } else if (policy_ == foray::localization::PoseSourcePolicy::kExternal) {
         foray::localization::RegistrationSample sample;
         sample.stamp_ns = now_ns;
         sample.valid = last_odom_ns_ > 0;
@@ -582,7 +599,14 @@ void LocalizationNode::publish_state() {
 
 void LocalizationNode::publish_tf() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (health_status_.state == foray::localization::HealthState::kLost || !has_odom_) {
+    // 只放行 OK / DEGRADED（decision.md D36）：闸门原来写成「非 LOST」，等于把
+    // `INITIALIZING` 也算成可信——可那时还没有任何一帧配准证据，发出去的
+    // `map → odom` 只能是构造时那个恒等矩阵。README 健康契约要求「LOST 停发」，
+    // 而这里比它更紧：只有被配准证明过的状态才允许发布。
+    const foray::localization::HealthState state = health_status_.state;
+    if ((state != foray::localization::HealthState::kOk &&
+         state != foray::localization::HealthState::kDegraded) ||
+        !has_odom_) {
         return;
     }
     geometry_msgs::msg::TransformStamped message;

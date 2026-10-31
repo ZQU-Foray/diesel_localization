@@ -66,6 +66,10 @@
   - [ ] **P1 L2/L3/L4/L5/L9/L10**：地图失败转 LOST 且 TF 只放行 `OK`/`DEGRADED`、
     `child_frame_id` 校验与 TF 补转换、位姿源仲裁接线（`select_pose_source`）、
     参数声明顺序、配准量测锁内快照、PCD 加载上限与异常安全
+    - [x] **L2 地图不可用即 LOST、TF 闸门收紧**（`decision.md` D36）：三种地图失败
+      （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
+      上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
+      `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
   - [ ] **P2 L6/L7/L8/L11/L12/L13/L14/L15/L16 + 附带(a)(b)**：点云消费与 TF 时间戳、
     协方差真实填充、odom QoS 对齐 `sensor_data`、ICP 弧度阈值、EKF 增益饱和与
     Joseph 形式、GICP 缓存指纹、可观性掩码统一到 `map → odom`、新鲜度判定统一时钟域、

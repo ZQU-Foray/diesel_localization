@@ -238,6 +238,10 @@ source: "RMUL 2027 field survey"
 `odometry stale: <age>s (no samples)`（真的没有新帧）、
 `odometry stale: <age>s (processing backlog <lag>s)`（帧在队列里积压，即本节点处理不及）。
 
+地图不可用是 `LOST` 的另一条成因：`map_manifest` 未设置、sha256 校验失败、点数超限或
+加载异常，都会把状态锁进 `LOST`，reason 以 `map unavailable:` 开头。此时 `map → odom`
+**一帧都不发**（`decision.md` D36）。
+
 `LocalizationState` 的字段：`header`（`stamp` 为状态快照时刻）、`pose`（`map → base_frame`）、
 **`pose_valid`**、`confidence`、`age_sec`（距上次有效配准）、`state`、`source`、`reason`。
 
