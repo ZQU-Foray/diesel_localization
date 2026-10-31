@@ -70,6 +70,15 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     health_config_.lidar_timeout_sec = declare_parameter<double>("lidar_timeout_sec", 0.2);
     health_config_.warmup_frames = declare_parameter<int>("warmup_frames", 3);
     health_config_.recover_frames = declare_parameter<int>("recover_frames", 3);
+    // 这两条必须在 HealthMonitor 构造之前声明：`HealthMonitor` 按值拷走整份 config，
+    // 声明晚了写进 `health_config_` 的值永远进不了状态机（父提交把 `min_source_points`
+    // 与 `max_unobservable_dofs` 写在了 `health_` 构造之后，两个参数因此完全无效，
+    // 见 decision.md D39）。
+    const int min_source_points_param = declare_parameter<int>("min_source_points", 0);
+    // 负值等价于「不设下限」：显式夹到 0，避免负值经 size_t 转换变成天文数字。
+    health_config_.min_source_points =
+        static_cast<std::size_t>(min_source_points_param > 0 ? min_source_points_param : 0);
+    health_config_.max_unobservable_dofs = declare_parameter<int>("max_unobservable_dofs", 6);
     health_ = foray::localization::HealthMonitor(health_config_);
 
     // 融合层滤波（decision.md D24）。默认关闭；关闭时 update() 逐字节透传量测，
@@ -102,12 +111,6 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     observability_ratio_threshold_ =
         declare_parameter<double>("observability_ratio_threshold", 0.0);
     profile_enabled_ = declare_parameter<bool>("profile_enabled", false);
-    const int min_source_points_param = declare_parameter<int>("min_source_points", 0);
-    // 负值等价于「不设下限」：显式夹到 0，避免负值经 size_t 转换变成天文数字。
-    health_config_.min_source_points =
-        static_cast<std::size_t>(min_source_points_param > 0 ? min_source_points_param : 0);
-    health_config_.max_unobservable_dofs =
-        declare_parameter<int>("max_unobservable_dofs", 6);
     // 后端由编译期开关决定（decision.md D21）。启动时把实际后端打出来，
     // 免得出现「文档说 GICP、实际跑 ICP」这种只能在事后靠精度异常才发现的情况。
     // 注入后端只用于离线回放与节点级测试，日志必须明说，否则现场会误判成默认后端。

@@ -70,6 +70,10 @@
       （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
       上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
       `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
+    - [x] **L5 参数声明顺序**（`decision.md` D39）：`min_source_points` /
+      `max_unobservable_dofs` 的 declare 移到 `HealthMonitor` 构造之前。集成用例
+      `MinSourcePointsParameterTakesEffect`：250 点进 `OK`、降到 30 点落
+      `DEGRADED / insufficient source points`；父提交同用例停在 `OK`（参数完全无效）。
     - [x] **L4 位姿源仲裁接线**（`decision.md` D38）：`select_pose_source()` 每拍重算，
       `auto` 只在雷达断流时接受外部位姿；外部位姿不再伪造 `inlier_ratio=1.0`（改由
       `has_registration_quality=false` 走「只判新鲜度」路径）。三条集成用例在父提交上

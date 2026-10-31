@@ -1256,3 +1256,32 @@ Consequences:
   翻回雷达（父提交永远 `source=2`）。
 
 状态：已实现（2026-10-31）。
+
+## D39 参数声明顺序：`HealthMonitor` 按值拷 config，声明晚了就等于没声明
+
+Context: `min_source_points` 与 `max_unobservable_dofs` 在 `README.md` 参数表里写着默认值
+0 与 6，三份兵种配置也都列了，`check_params.py` 天天校验它们与 `declare_parameter` 一致——
+但节点里这两条 declare 写在 `health_ = HealthMonitor(health_config_)` **之后**。
+`HealthConfig` 是按值拷进状态机的，于是这两个参数无论配成什么，状态机里永远是构造那一刻的
+默认值：`points_ok` 恒真、`observable_ok` 恒真（`max_unobservable_dofs = 6` 时任何帧都算可观测）。
+README 承诺的「点数不足 → DEGRADED」「不可观方向过多 → DEGRADED」两条判据整条是死的。
+
+Decision: 把这两条 `declare_parameter` 移到 `HealthMonitor` 构造之前，与其他 health 参数
+放在一起。不加 `set_config()`——参数属于构造期输入，运行期可变配置会把「这一段为什么判
+DEGRADED」变成需要看时序才能回答的问题。
+
+Reason: 这是一类**只在配置非默认值时暴露**的缺陷：默认值下行为完全正确，所以谁都没发现。
+判据很简单——参数表里有的东西，就必须有一条测试证明它真的改变了行为，否则它只是文档。
+
+Alternatives: 给 `HealthMonitor` 加 `set_config()` 并在构造后回填。
+Rejected: 那会让「同一份 config 被读两次、第二次可能晚于第一次的判定」成为合法状态；
+`HealthMonitor` 的判定与 `config_` 的对应关系必须是一次性的（D28 ①：只改根因，不铺兜底）。
+
+Consequences:
+- `min_source_points: 200` 配上去真的会生效：`test_localization_node` 的
+  `MinSourcePointsParameterTakesEffect` 用 250 点进 `OK`、降到 30 点落 `DEGRADED`
+  （`reason=insufficient source points`）；父提交同一用例停在 `OK`（`warmup complete`）。
+- 将来新增任何 health 参数，都必须写在这段 declare 之后、`HealthMonitor` 构造之前；
+  这条约束写在参数块注释里，不靠记忆。
+
+状态：已实现（2026-10-31）。

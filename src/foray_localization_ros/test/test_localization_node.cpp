@@ -184,11 +184,12 @@ TEST(LocalizationNodeTest, OdometryWithoutChildFrameTfIsDropped) {
 }
 
 /// 一直喂里程计 + 点云直到健康状态进入 OK（warmup_frames 帧合格配准）。
-bool drive_until_ok(NodeHarness& harness, std::chrono::milliseconds timeout) {
+bool drive_until_ok(NodeHarness& harness, std::chrono::milliseconds timeout,
+                    std::size_t cloud_points = 10) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         harness.publish_odom(0.0, 0.0);
-        harness.publish_cloud(10);
+        harness.publish_cloud(cloud_points);
         if (harness.last_state().state == LocalizationState::STATE_OK) {
             return true;
         }
@@ -266,6 +267,35 @@ TEST(LocalizationNodeTest, AutoPolicySwitchesBackToLidarWhenItReturns) {
     const auto state = harness.last_state();
     print_source_receipt("雷达恢复", state);
     EXPECT_EQ(state.source, LocalizationState::SOURCE_SENTRY_LIDAR);
+}
+
+std::vector<rclcpp::Parameter> with_min_source_points(const TempMapDir& map, int minimum) {
+    auto overrides = map_overrides(map);
+    overrides.emplace_back("min_source_points", minimum);
+    return overrides;
+}
+
+/// L5 用例：`min_source_points` 必须在构造期就进健康状态机。
+/// 父提交在 `health_` 构造之后才 declare 这两条参数，配置写进去也永远不生效，
+/// 于是「点数不足」这条判据整条是死的。
+TEST(LocalizationNodeTest, MinSourcePointsParameterTakesEffect) {
+    TempMapDir map;
+    NodeHarness harness(with_min_source_points(map, 200), 5ms);
+
+    // 250 点满足下限：正常进 OK。
+    ASSERT_TRUE(drive_until_ok(harness, 5000ms, 250)) << "满足下限的点云没有进入 OK";
+
+    // 降到 30 点（< min_source_points）：必须落 DEGRADED，且理由直指点数。
+    harness.drive(800ms, 20ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_cloud(30);
+    });
+
+    const auto state = harness.last_state();
+    std::printf("L5 回执: state=%u pose_valid=%d reason=%s\n", static_cast<unsigned>(state.state),
+                state.pose_valid ? 1 : 0, state.reason.c_str());
+    EXPECT_EQ(state.state, LocalizationState::STATE_DEGRADED);
+    EXPECT_EQ(state.reason, "insufficient source points");
 }
 
 } // namespace
