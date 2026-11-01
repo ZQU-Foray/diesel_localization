@@ -22,9 +22,17 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
     if (manifest.empty()) {
         RCLCPP_ERROR(get_logger(), "map_manifest 未设置，地图服务不可用");
     } else {
-        const auto result = foray::localization_map::load_prior_map(manifest, &map_, verify);
-        if (!result.ok) {
-            RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", result.error.c_str());
+        bool loaded = false;
+        std::string load_error;
+        try {
+            const auto result = foray::localization_map::load_prior_map(manifest, &map_, verify);
+            loaded = result.ok;
+            load_error = result.error;
+        } catch (const std::exception& exception) {
+            load_error = exception.what();
+        }
+        if (!loaded) {
+            RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", load_error.c_str());
         } else {
             loaded_ = true;
             RCLCPP_INFO(get_logger(), "地图版本 %s，%zu 点，栅格 %dx%d",

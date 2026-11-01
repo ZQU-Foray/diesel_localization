@@ -218,11 +218,21 @@ void LocalizationNode::load_map() {
         return;
     }
     foray::localization_map::PriorMap map;
-    const auto result =
-        foray::localization_map::load_prior_map(map_manifest_, &map, verify_map_hashes_);
-    if (!result.ok) {
-        RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", result.error.c_str());
-        mark_map_unavailable("加载先验地图失败: " + result.error);
+    // 加载路径不许把异常抛给 executor：地图文件是外部输入，畸形头/内存不足都必须变成
+    // 「地图不可用」这一条可观测结论（audit L10）。
+    bool loaded = false;
+    std::string load_error;
+    try {
+        const auto result =
+            foray::localization_map::load_prior_map(map_manifest_, &map, verify_map_hashes_);
+        loaded = result.ok;
+        load_error = result.error;
+    } catch (const std::exception& exception) {
+        load_error = exception.what();
+    }
+    if (!loaded) {
+        RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", load_error.c_str());
+        mark_map_unavailable("加载先验地图失败: " + load_error);
         return;
     }
     if (map_voxel_leaf_m_ > 0.0) {

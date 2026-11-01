@@ -70,6 +70,10 @@
       （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
       上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
       `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
+    - [x] **L10 PCD 头校验与异常安全**（`decision.md` D41）：三条硬上限 + `from_chars`
+      不抛异常解析 + 二进制段先量剩余字节再分配 + ascii 实际行数校验 + 加载调用点
+      `try/catch`。`test_pcd_loader` 4→8 条，父提交四条全红；节点级
+      `OversizedPointCountSendsNoTransform` 覆盖「20 亿点地图 → 一帧 TF 都不发」。
     - [x] **L9 配准量测时刻对齐**（`decision.md` D40）：锁内快照 `odom_to_base_at_cloud`，
       量测换算不再读配准结束时的里程计。`MapToOdomJitterUnderConstantVelocity`（1 m/s、
       200 ms 后端、8 s/20 次配准）`map → odom` 极差父提交 3.2110 m、本提交 0.0000 m。

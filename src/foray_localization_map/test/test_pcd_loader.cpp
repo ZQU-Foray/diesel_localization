@@ -120,4 +120,71 @@ TEST(PcdLoaderTest, SkipsInvalidPoints) {
     EXPECT_EQ(result.cloud.size(), 2U);
 }
 
+// L10：PCD 头是不可信输入。下面四条分别覆盖「声明点数超上限」「字段尺寸畸形」
+// 「ascii 声明点数与内容不符」「尺寸/偏移溢出」，共同判据只有一条：
+// load_pcd 必须返回 ok=false 且带可读 error，而不是抛异常或按声明值分配内存。
+std::string header_with(const std::string& size_line, const std::string& count_line,
+                        const std::string& points_line, const std::string& data_line) {
+    return "VERSION 0.7\nFIELDS x y z\n" + size_line + "TYPE F F F\n" + count_line +
+           "WIDTH 3\nHEIGHT 1\n" + points_line + data_line;
+}
+
+TEST(PcdLoaderTest, RejectsDeclaredPointCountAboveLimit) {
+    TempDir dir;
+    const fs::path file = dir.path / "huge.pcd";
+    {
+        std::ofstream out(file);
+        out << header_with("SIZE 4 4 4\n", "COUNT 1 1 1\n", "POINTS 2000000000\n", "DATA ascii\n");
+        out << "0 0 0\n";
+    }
+
+    const auto result = foray::localization_map::load_pcd(file);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("上限"), std::string::npos) << result.error;
+}
+
+TEST(PcdLoaderTest, RejectsNonNumericFieldSize) {
+    TempDir dir;
+    const fs::path file = dir.path / "bad_size.pcd";
+    {
+        std::ofstream out(file);
+        out << header_with("SIZE abc 4 4\n", "COUNT 1 1 1\n", "POINTS 1\n", "DATA ascii\n");
+        out << "0 0 0\n";
+    }
+
+    const auto result = foray::localization_map::load_pcd(file);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("SIZE"), std::string::npos) << result.error;
+}
+
+TEST(PcdLoaderTest, RejectsTruncatedAsciiData) {
+    TempDir dir;
+    const fs::path file = dir.path / "truncated.pcd";
+    {
+        std::ofstream out(file);
+        out << header_with("SIZE 4 4 4\n", "COUNT 1 1 1\n", "POINTS 1000\n", "DATA ascii\n");
+        for (int i = 0; i < 10; ++i) {
+            out << i << " 0 0\n";
+        }
+    }
+
+    const auto result = foray::localization_map::load_pcd(file);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("数据长度不足"), std::string::npos) << result.error;
+}
+
+TEST(PcdLoaderTest, RejectsOversizedFieldBytes) {
+    TempDir dir;
+    const fs::path file = dir.path / "field_overflow.pcd";
+    {
+        std::ofstream out(file);
+        out << header_with("SIZE 2000000000 4 4\n", "COUNT 1 1 1\n", "POINTS 1\n", "DATA ascii\n");
+        out << "0 0 0\n";
+    }
+
+    const auto result = foray::localization_map::load_pcd(file);
+    EXPECT_FALSE(result.ok);
+    EXPECT_NE(result.error.find("字段尺寸非法"), std::string::npos) << result.error;
+}
+
 } // namespace

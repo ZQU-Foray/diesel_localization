@@ -1315,3 +1315,41 @@ Consequences:
   属于传感器时间戳对齐范畴，不再是本节点的逻辑错误。
 
 状态：已实现（2026-10-31）。
+
+## D41 PCD 头是不可信输入：先量再分配，畸形就报错
+
+Context: `load_pcd()` 完全信任 PCD 头部：`POINTS` 直接进 `reserve()`，`SIZE/COUNT` 用
+`stoi` 直接乘进 `int` 偏移，二进制分支先 `std::vector<char> buffer(stride * points)` 再读。
+三种后果都实测到了：`SIZE abc` 抛 `std::invalid_argument`（穿透到 `load_map` 与 executor）、
+`SIZE 2000000000` 把字段偏移算成负数/溢出、`POINTS 2000000000` 在没有上限的情况下被
+接受（64 位 overcommit 让 `reserve` 成功，于是「声明 20 亿点、实际 1 行」被当成正常地图，
+`ok == true`；32 位或真正触碰内存的分支就是 `bad_alloc` 终止进程）。sha256 校验挡不住这些
+——文件本来就是这么写的（audit 的 Q6）。
+
+Decision:
+1. 头部数值一律不抛异常解析：整数走 `std::from_chars`，浮点包 `try/catch` 后返回 false，
+   统一转成 `PcdLoadResult.error`。
+2. 三条硬上限（`kMaxPcdPoints = 20'000'000`、`kMaxPcdBytes = 512 MiB`、
+   `kMaxPcdFieldBytes = 32` / `kMaxPcdFieldCount = 64`），数值来源写在常量旁的注释里。
+3. 二进制段先 `tellg` + `seekg(0, end)` 量出剩余字节，再和 `uintmax_t(stride) * points`
+   （乘完再比，不在 32 位里回绕）比较，不够就不分配。
+4. ascii 段校验实际行数：行数少于 `POINTS` 即报「数据长度不足」，不再静默截断。
+5. 分配与加载调用点各自 `try/catch`，异常一律变成 `error`（节点侧再变成
+   「地图不可用」的 `LOST`，见 D36）。
+
+Reason: 地图是可以被人为写坏、被工具写坏的输入，而且写在启动路径上。宁可「响亮地失败，
+地图不可用、一帧 TF 都不发」，也不许「静默接受半张地图然后 20 Hz 广播错误位姿」。
+
+Alternatives: ①信任 sha256（校验通过即认为文件正确）——被否决，sha 只证明「没被改动」，
+不证明「本来就合法」；②把上限做成 ROS 参数——被否决，这是防御性常量而非现场可调项，
+加参数就要配套改 README 表与三份兵装配置（D15/D18 的门禁），收益不抵成本。
+
+Consequences:
+- `test_pcd_loader` 从 4 条增至 8 条：`RejectsDeclaredPointCountAboveLimit`、
+  `RejectsNonNumericFieldSize`、`RejectsTruncatedAsciiData`、`RejectsOversizedFieldBytes`。
+  四条在父提交上全红（`ok == true` 或抛异常），落地后全绿。
+- 节点级 `OversizedPointCountSendsNoTransform`：`POINTS 2000000000` 的地图 → 地图不可用、
+  `LOST`、`map → odom` 一帧不发。
+- 合法地图的行为不变（现有 4 条用例与三份兵种配置的地图都不受影响）。
+
+状态：已实现（2026-11-01）。

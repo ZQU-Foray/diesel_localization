@@ -42,6 +42,22 @@ std::string truncated_binary_pcd() {
     return text;
 }
 
+/// 头部合法、但声明了 20 亿点的 ascii PCD：父提交按声明值 reserve、再把
+/// 「实际只有 1 行」当成正常文件接受（audit L10）。上限与「实际行数」校验落地后
+/// 它必须在 `load_pcd` 里就被拒。
+std::string oversized_point_count_pcd() {
+    return "VERSION 0.7\n"
+           "FIELDS x y z\n"
+           "SIZE 4 4 4\n"
+           "TYPE F F F\n"
+           "COUNT 1 1 1\n"
+           "WIDTH 2000000000\n"
+           "HEIGHT 1\n"
+           "POINTS 2000000000\n"
+           "DATA ascii\n"
+           "0 0 0\n";
+}
+
 /// 地图不可用时的共同断言。`fragment` 用来钉住「哪一种成因」，避免三条用例互相顶替。
 void expect_map_unavailable(NodeHarness& harness, const std::string& fragment) {
     // 必须先让里程计在流：`publish_tf()` 还有 `!has_odom_` 这道前置 return，
@@ -81,6 +97,13 @@ TEST(LocalizationNodeMapErrors, TruncatedPcdSendsNoTransform) {
     TempMapDir map(truncated_binary_pcd());
     NodeHarness harness({rclcpp::Parameter("map_manifest", map.manifest_path())}, milliseconds(5));
     expect_map_unavailable(harness, "PCD");
+}
+
+TEST(LocalizationNodeMapErrors, OversizedPointCountSendsNoTransform) {
+    TempMapDir map;
+    map.rewrite_pcd(oversized_point_count_pcd());
+    NodeHarness harness({rclcpp::Parameter("map_manifest", map.manifest_path())}, milliseconds(5));
+    expect_map_unavailable(harness, "上限");
 }
 
 }  // namespace
