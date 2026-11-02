@@ -91,6 +91,9 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     filter_config.unobservable_noise_scale =
         declare_parameter<double>("filter_unobservable_noise_scale", 10.0);
     pose_filter_ = foray::localization::PoseEkf(filter_config);
+    // 不可观方向的方差倍数与融合层共用同一个参数：状态消息里的协方差也要按它放大，
+    // 否则下游按协方差加权时会把「其实没被约束」的方向当成高可信观测（decision.md D43）。
+    unobservable_noise_scale_ = filter_config.unobservable_noise_scale;
     if (filter_config.enabled) {
         RCLCPP_INFO(get_logger(), "融合层 EKF 已启用: 量测噪声=%.3f m 不可观方向倍数=%.1f",
                     filter_config.measurement_noise_translation_m,
@@ -587,6 +590,13 @@ void LocalizationNode::on_align_timer() {
     sample.source_points = cloud.size();
     sample.condition_number = observability_enabled ? observability.condition_number : 0.0;
     sample.unobservable_count = observability_enabled ? observability.unobservable_count : 0;
+    // 位姿与它的可信度必须一起发布（decision.md D43 / 审计 L7）：状态消息里的协方差要用
+    // 这一帧的残差、内点率与逐方向可观性算出来，所以样本与掩码得留在成员里，
+    // 不能随本函数返回而消失。不可观测性关闭时，6 个方向都按「有约束」处理。
+    last_sample_ = sample;
+    observable_ = observability_enabled ? observability.observable
+                                        : std::array<bool, foray::localization_map::kDofCount>{
+                                              true, true, true, true, true, true};
     // 健康评估以当前时间进行：odom_ns 是最近一次里程计时间戳，更新快于点云，
     // 与点云时间戳相比会天然反序，若直接传入会误判为里程计断流。
     const std::int64_t eval_ns = now().nanoseconds();
@@ -687,7 +697,20 @@ void LocalizationNode::publish_state() {
     if (status.state == foray::localization::HealthState::kLost) {
         status.confidence = 0.0;
     }
-    state_pub_->publish(to_msg_state(status, pose, active_source_, now_ns));
+    // 协方差与位姿一起发（decision.md D43 / 审计 L7）。只有「这一拍真的有一帧带质量的配准、
+    // 且位姿允许被下游消费」时才填实测值；外部位姿源与 INITIALIZING/LOST 都如实声明
+    // 「不知道有多好」，而不是退回 0 方差假装绝对准确。
+    PoseUncertainty uncertainty;
+    uncertainty.has_registration_quality =
+        active_source_ != foray::localization::PoseSource::kExternalOdom && last_sample_.valid &&
+        last_sample_.has_registration_quality &&
+        (status.state == foray::localization::HealthState::kOk ||
+         status.state == foray::localization::HealthState::kDegraded);
+    uncertainty.mean_residual_m = last_sample_.mean_residual_m;
+    uncertainty.inlier_ratio = last_sample_.inlier_ratio;
+    uncertainty.observable = observable_;
+    uncertainty.unobservable_scale = unobservable_noise_scale_;
+    state_pub_->publish(to_msg_state(status, pose, active_source_, now_ns, uncertainty));
 }
 
 void LocalizationNode::publish_tf() {

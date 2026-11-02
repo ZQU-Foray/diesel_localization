@@ -428,6 +428,57 @@ TEST(LocalizationNodeTest, CloudArrivingDuringAlignmentIsNotDropped) {
         << "配准期间到达的那一帧被丢掉了：之后 600 ms 的配准用的还是上一帧";
 }
 
+/// L7：状态消息里的协方差必须如实反映配准质量，而不是整块 0（审计 L7）。
+///
+/// 父提交 `to_msg_state()` 里写的是 `message.pose.covariance.fill(0.0)`。在
+/// `PoseWithCovariance` 的语义里 0 方差意味着「这个位姿绝对准确」——任何按协方差加权的
+/// 下游（导航的 EKF、融合节点）都会把配准结果当成无限可信的观测，同时「其实不知道」这件事
+/// 被彻底藏起来：下游既无法据此降权，也没有任何字段看得出这件事。
+TEST(LocalizationNodeTest, StateCovarianceReflectsRegistrationQuality) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+
+    // 还没有任何一帧配准（INITIALIZING）：只能声明「不知道有多好」。
+    ASSERT_TRUE(harness.wait_until([&harness]() { return harness.state_count() > 2; },
+                                   std::chrono::milliseconds(3000)))
+        << "节点没有发布状态";
+    const auto initial = harness.last_state();
+    std::printf("L7 回执(INITIALIZING): state=%u cov[x]=%.3f cov[yaw]=%.3f\n", initial.state,
+                initial.covariance[0], initial.covariance[3 * 7]);
+    for (std::size_t dof = 0; dof < 6; ++dof) {
+        EXPECT_DOUBLE_EQ(initial.covariance[dof * 7], 1000.0) << "dof=" << dof;
+    }
+
+    ASSERT_TRUE(drive_until_ok(harness, std::chrono::milliseconds(5000))) << "雷达链路没有进入 OK";
+    const auto ok = harness.last_state();
+    // 配准替身给的是残差 0 / 内点率 1：σ 落到 1 cm 下限，方差 1e-4 —— 既不是 0，
+    // 也不是「无信息」的 1e3。
+    const double expected = 0.01 * 0.01;
+    std::printf("L7 回执(OK): state=%u cov[x]=%.6f cov[yaw]=%.6f cov[xy]=%.6f\n", ok.state,
+                ok.covariance[0], ok.covariance[3 * 7], ok.covariance[1]);
+    EXPECT_NEAR(ok.covariance[0], expected, 1e-9);
+    EXPECT_NEAR(ok.covariance[3 * 7], expected, 1e-9);
+    EXPECT_DOUBLE_EQ(ok.covariance[1], 0.0) << "非对角项凭空表示了两个方向的相关性";
+}
+
+/// L7 第二面：外部位姿源没有可测的配准质量，协方差必须退回「不知道有多好」，
+/// 而不是沿用上一帧雷达配准的数值——那会让外部位姿看起来和雷达一样准（D38 同一条口径）。
+TEST(LocalizationNodeTest, ExternalSourceCovarianceDoesNotReuseLidarQuality) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+    ASSERT_TRUE(drive_until_ok(harness, std::chrono::milliseconds(5000))) << "雷达链路没有进入 OK";
+
+    harness.drive(std::chrono::milliseconds(800), 20ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_external_pose(5.0, 0.0);
+    });
+
+    const auto state = harness.last_state();
+    std::printf("L7 回执(外部位姿): source=%u cov[x]=%.3f\n", state.source, state.covariance[0]);
+    ASSERT_EQ(state.source, LocalizationState::SOURCE_EXTERNAL_ODOM);
+    EXPECT_DOUBLE_EQ(state.covariance[0], 1000.0);
+}
+
 } // namespace
 } // namespace foray::localization_ros::test_support
 

@@ -99,6 +99,12 @@
       父提交 TF 戳与最近点云戳最大偏差 50.150 ms、本提交 0.000 ms；
       `CloudArrivingDuringAlignmentIsNotDropped` 父提交 600 ms 内只配到老帧（源点数 `{10}`），
       本提交配到了配准期间到达的 77 点帧。
+    - [x] **L7 协方差真实填充**（`decision.md` D43）：`PoseUncertainty` + `pose_covariance()`
+      取代 `covariance.fill(0.0)`，按残差 / 内点率填对角、不可观方向乘
+      `filter_unobservable_noise_scale²`、无配准质量时写 1e3。节点级读数父提交
+      `INITIALIZING cov[x]=0.000 / OK cov[x]=0.000000 / 外部位姿 cov[x]=0.000`，
+      本提交 `1000.000 / 0.000100 / 1000.000`；`StateMessageCarriesTheCovariance`
+      在父提交行为下报 `covariance[0] evaluates to 0`。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

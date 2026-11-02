@@ -23,6 +23,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -195,6 +196,8 @@ struct StateRecord {
     std::string reason;
     double x{0.0};
     std::int64_t stamp_ns{0};
+    /// 6×6 位置/姿态协方差的 36 个值（行主序）。审计 L7 要求位姿与可信度一起发布。
+    std::array<double, 36> covariance{};
 };
 
 inline sensor_msgs::msg::PointCloud2 make_cloud_msg(const std::string& frame,
@@ -275,6 +278,7 @@ class NodeHarness {
                 record.pose_valid = message->pose_valid;
                 record.reason = message->reason;
                 record.x = message->pose.pose.position.x;
+                record.covariance = message->pose.covariance;
                 record.stamp_ns =
                     static_cast<std::int64_t>(message->header.stamp.sec) * 1000000000LL +
                     static_cast<std::int64_t>(message->header.stamp.nanosec);

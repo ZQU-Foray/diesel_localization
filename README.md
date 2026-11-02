@@ -266,6 +266,15 @@ source: "RMUL 2027 field survey"
 合成位姿，只为 rosbag 复盘与诊断保留。TF `map → odom` 在 `LOST` 下停发，下游若绕过
 `pose_valid` 直接查 TF 会拿到过期结果。**失效标志不可被下游静默忽略。**
 
+**协方差契约（强制）**：`pose.covariance` 是 6×6 行主序（`x, y, z, rotX, rotY, rotZ`），
+只填对角——配准残差没有给出方向间的相关性。对角按最近一帧的残差与内点率给：位置方向
+σ = `max(残差, 1 cm) / sqrt(内点率)`，姿态方向 σ = 位置 σ / 1 m 杠杆；该帧不可观的自由度
+再按 `filter_unobservable_noise_scale` 的平方放大。**没有任何配准质量时（从未配准、
+`INITIALIZING`/`LOST`、外部位姿源）对角写 1e3，绝不写 0**——0 方差在
+`PoseWithCovariance` 里等于「无限权重」，会把未知量伪装成绝对真值（`decision.md` D43）。
+按协方差加权的下游可以据此降权，但**不得**把它当成「位姿一定可用」的判据——那是
+`pose_valid` 的职责。
+
 ## 依赖
 
 | 类型 | 依赖 |

@@ -30,6 +30,7 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -194,6 +195,13 @@ class LocalizationNode : public rclcpp::Node {
     /// 父提交没有任何「外部位姿还在不在」的状态，于是接管之后永远翻不回来。
     std::int64_t last_external_ns_{0};
     foray::localization::HealthStatus health_status_;
+    /// 最近一次配准的样本与逐方向可观性（decision.md D43）。状态消息要把「这个位姿有多准」
+    /// 和位姿一起发出去，而这两样东西原本只是 `on_align_timer()` 的局部变量，配准结束即丢弃。
+    foray::localization::RegistrationSample last_sample_;
+    std::array<bool, foray::localization_map::kDofCount> observable_{true, true, true,
+                                                                     true, true, true};
+    /// `filter_unobservable_noise_scale` 的原值。不可观方向的方差倍数与融合层共用同一个旋钮。
+    double unobservable_noise_scale_{1.0};
     std::atomic<bool> relocalize_pending_{false};
     Eigen::Isometry3d pending_map_to_base_{Eigen::Isometry3d::Identity()};
 
