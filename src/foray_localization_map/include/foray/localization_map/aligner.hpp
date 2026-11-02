@@ -19,8 +19,15 @@ struct AlignOptions {
     int max_iterations{10};
     /// 对应点最大距离（米）。超过即视为外点，不参与位姿估计。
     double max_correspondence_distance_m{0.5};
-    /// 相邻两轮位姿变化小于该值即认为收敛。
+    /// 相邻两轮**平移**变化小于该值（米）即认为平移收敛。
     double transformation_epsilon_m{1e-4};
+    /// 相邻两轮**姿态**变化小于该值（弧度）即认为姿态收敛。
+    ///
+    /// 与 `transformation_epsilon_m` 分开：米和弧度不是同一个量纲。此前两者共用 1e-4，
+    /// 等于要求每轮姿态变化小于 0.0057°，比点云 float32 所能表达的精度还细，实测里会把
+    /// 迭代预算烧在噪声上、最后报「未收敛」（审计 L11）。1e-3 rad（0.057°）与 5 Hz
+    /// 配准、厘米级残差的精度要求相称。PCL 的 GICP 后端用自己的收敛判据，不读本字段。
+    double transformation_epsilon_rad{1e-3};
 };
 
 struct AlignResult {

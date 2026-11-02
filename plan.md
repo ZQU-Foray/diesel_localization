@@ -109,6 +109,13 @@
       reliable 改成 `SensorDataQoS()`，启动打一行实际 QoS。`BestEffortOdometryUpstreamIsReceived`
       父提交 `odom_received=0`（DDS 报 `RELIABILITY_QOS_POLICY` 不兼容）、本提交 146 帧全收；
       13 条既有用例仍用 reliable 发布并通过，证明兼容方向没写反。
+    - [x] **L11 ICP 收敛判据拆米/弧度**（`decision.md` D45）：`AlignOptions` 增
+      `transformation_epsilon_rad`（默认 1e-3 rad），与 `transformation_epsilon_m`（1e-4 m）
+      分别比较；预算耗尽时把迭代次数与两项增量写进 `error`。`test_icp`
+      `MeterThresholdDoesNotSetRotationTolerance` 父提交 `iterations=1`、残余角度 0.1838 rad
+      就宣布收敛（本提交 10 次迭代、0.0000 rad）；`ExhaustedBudgetExplainsItself` 父提交
+      `converged=0 error=''`（本提交给出完整阈值与增量）。注：审计说的「几乎不收敛」在合成
+      点云上没有复现，实测定性为「量纲混用 + 失败无说明」，已写进 D45。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

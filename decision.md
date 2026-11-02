@@ -1472,3 +1472,49 @@ Consequences:
 - README 无需改动：它本来就是这么声明的，改的是代码。
 
 状态：已实现（2026-11-03）。
+
+## D45 内置 ICP 的收敛判据按量纲拆成「米」与「弧度」，预算耗尽必须说明原因
+
+Context: `IcpAligner` 用同一个 `AlignOptions::transformation_epsilon_m`（默认 1e-4）同时比
+平移增量的模与旋转增量的角度（审计 L11）。两个量不是同一个量纲：1e-4 m 是 0.1 mm，
+1e-4 rad 是 0.0057°，比 float32 点云能表达的姿态精度还细。字段名说的是米，实际兼职当弧度
+用，于是同一个数字在两种量纲下含义差了两个数量级——给平移定的容忍度，悄悄变成了给姿态定的
+容忍度。另一半缺陷在出口：跑满 `max_iterations` 仍未收敛时 `AlignResult::error` 是空的，
+调用方只看到一个 `converged=false`，既分不清「数据坏」与「阈值严」，也没法在日志里留下线索。
+
+Decision:
+1. `AlignOptions` 新增 `transformation_epsilon_rad`（默认 1e-3 rad，即 0.057°/轮），
+   `transformation_epsilon_m` 保留默认 1e-4 m；两者**分别**比较，两项都满足才算收敛。
+2. 预算耗尽时填 `error`：说明跑了几次迭代、最后的平移增量与姿态增量各是多少、对应阈值是多少
+   （`max_iterations == 0` 单独给一句「一次迭代都没执行」）。
+3. 不新增 ROS 参数：`transformation_epsilon_*` 目前只有 `AlignOptions` 的默认值，节点不暴露；
+   现场要调就先调 `align_max_iterations`。
+
+Reason: 判据必须在自己的量纲里可解释。0.1 mm 的平移容忍与 0.057° 的姿态容忍都是「配准已经
+不动了」的合理刻画，而 0.0057° 不是——它把一个数值精度问题伪装成一个算法收敛问题，噪声一大
+就只能在「多跑几次迭代」和「报未收敛」之间二选一。另外 `AlignResult::error` 是本仓唯一的
+「为什么失败」通道（`load_map`、`pcd_loader`、`HealthMonitor` 都用它），让它空着等于让调用方
+失明。
+
+Alternatives: ①只把默认值从 1e-4 调到 1e-3，仍然共用一个字段——被否决：那只把「弧度太严」
+换成「米太松」（1e-3 m = 1 mm 的平移容忍对 5 Hz 配准偏松），量纲混用本身没解决；
+②新增 ROS 参数暴露两个阈值——被否决：本轮不新增任何 ROS 参数（README 参数表 /
+`declare_parameter` / 3 份兵种 yaml 三方零变更）；③未收敛时返回 `converged=true` 附上 warning——
+被否决：`converged` 是健康判据的输入，让它说谎等于把缺陷藏进状态机。
+
+Consequences:
+- `test_icp` 增 2 条用例，父提交上两条都红：
+  `MeterThresholdDoesNotSetRotationTolerance`（`eps_m=1.0`、初始偏差 0.2 rad，非周期点云
+  600 点）父提交 `iterations=1`、残余角度 `0.1838 rad` 就宣布收敛；本提交 `iterations=10`、
+  残余角度 `0.0000 rad`。`ExhaustedBudgetExplainsItself`（`max_iterations=1`）父提交
+  `converged=0 iterations=1 error=''`；本提交
+  `error='未收敛：跑满 1 次迭代后位姿变化仍超过阈值（平移 0.032076 m ≥ 0.000100 m，姿态 0.021435 rad ≥ 0.001000 rad）'`。
+- 诚实记录：审计说的「几乎不收敛」在合成点云上没有复现——规则网格与 1 cm 噪声点云都是
+  2 次迭代内收敛（旋转增量先掉到 1e-4 rad 以下），所以本条的实测危害是「字段语义混用 +
+  失败无说明」，而不是「必然不收敛」；红证据因此取「米制阈值被当成弧度阈值」与「预算耗尽
+  error 为空」两点，而不是硬凑一个不收敛的场景。
+- PCL GICP 后端不受影响：它用自己的收敛判据，`transformation_epsilon_rad` 只服务于内置 ICP。
+- 节点侧行为变化：默认配置下旋转判据从 1e-4 放宽到 1e-3 rad；配准未收敛的日志里现在带完整
+  的阈值与增量说明（`localization_node.cpp` 的 warn 直接打印 `result.error`）。
+
+状态：已实现（2026-11-03）。

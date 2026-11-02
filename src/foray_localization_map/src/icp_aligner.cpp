@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
+#include <string>
 #include <vector>
 
 #include "foray/localization_map/alignment_metrics.hpp"
@@ -28,6 +30,9 @@ AlignResult IcpAligner::align(const PointCloud& source, const PointCloud& target
     Eigen::Isometry3d current = initial_guess;
     std::vector<Eigen::Vector3f> transformed;
     transformed.reserve(source.points.size());
+    // 最近一轮的位姿变化：收敛判据用，也用来在预算耗尽时如实说明停在哪里。
+    double last_translation_delta_m = std::numeric_limits<double>::infinity();
+    double last_angle_delta_rad = std::numeric_limits<double>::infinity();
 
     for (int iteration = 0; iteration < options_.max_iterations; ++iteration) {
         transformed.clear();
@@ -84,11 +89,30 @@ AlignResult IcpAligner::align(const PointCloud& source, const PointCloud& target
         current = delta * current;
         result.iterations = iteration + 1;
 
-        const double angle = Eigen::AngleAxisd(delta.linear()).angle();
-        if (delta.translation().norm() < options_.transformation_epsilon_m &&
-            angle < options_.transformation_epsilon_m) {
+        // 平移按米、姿态按弧度分别比：两个量纲共用一个阈值等于给姿态定了一个它做不到的
+        // 精度（1e-4 弧度 = 0.0057°），噪声量级下会一直判「没收敛」（审计 L11）。
+        last_translation_delta_m = delta.translation().norm();
+        last_angle_delta_rad = Eigen::AngleAxisd(delta.linear()).angle();
+        if (last_translation_delta_m < options_.transformation_epsilon_m &&
+            last_angle_delta_rad < options_.transformation_epsilon_rad) {
             result.converged = true;
             break;
+        }
+    }
+
+    // 预算跑完还没收敛：必须说清楚「停在哪里」，否则调用方只能看到一个 converged=false
+    // 和空 error，既不知道是数据坏还是阈值严（审计 L11 第二条要求）。
+    if (!result.converged) {
+        if (result.iterations == 0) {
+            result.error = "未收敛：迭代预算为 " + std::to_string(options_.max_iterations) +
+                           " 次，一次迭代都没执行";
+        } else {
+            result.error = "未收敛：跑满 " + std::to_string(options_.max_iterations) +
+                           " 次迭代后位姿变化仍超过阈值（平移 " +
+                           std::to_string(last_translation_delta_m) + " m ≥ " +
+                           std::to_string(options_.transformation_epsilon_m) + " m，姿态 " +
+                           std::to_string(last_angle_delta_rad) + " rad ≥ " +
+                           std::to_string(options_.transformation_epsilon_rad) + " rad）";
         }
     }
 
