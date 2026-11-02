@@ -185,6 +185,27 @@ TEST(LocalizationNodeTest, OdometryWithoutChildFrameTfIsDropped) {
     EXPECT_NE(harness.last_state().state, LocalizationState::STATE_OK);
 }
 
+/// L8：README 把 `/aft_mapped_to_init` 声明为 sensor_data，节点就必须收得下 best_effort 的上游。
+///
+/// 父提交对里程计用 `rclcpp::QoS(50)`（reliable）：上游按 README 用 best_effort 发布时
+/// DDS 判定 QoS 不兼容，回调一帧都收不到，于是「读不到里程计」被误报成上游断流。
+TEST(LocalizationNodeTest, BestEffortOdometryUpstreamIsReceived) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 5ms);
+
+    harness.drive(1500ms, 10ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.5, 0.0, "base_footprint", /*reliable=*/false);
+    });
+
+    const auto diagnostics = harness.diagnostics();
+    std::printf("L8 回执: best_effort 上游 1500ms → odom_received=%llu odom_processed=%llu\n",
+                static_cast<unsigned long long>(diagnostics.odom_received),
+                static_cast<unsigned long long>(diagnostics.odom_processed));
+    EXPECT_GT(diagnostics.odom_received, 0U)
+        << "best_effort 上游的里程计一帧都没进回调：订阅端与 README 的 sensor_data 不兼容";
+    EXPECT_GT(diagnostics.odom_processed, 0U);
+}
+
 /// 一直喂里程计 + 点云直到健康状态进入 OK（warmup_frames 帧合格配准）。
 bool drive_until_ok(NodeHarness& harness, std::chrono::milliseconds timeout,
                     std::size_t cloud_points = 10) {

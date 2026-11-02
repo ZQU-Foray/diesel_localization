@@ -105,6 +105,10 @@
       `INITIALIZING cov[x]=0.000 / OK cov[x]=0.000000 / 外部位姿 cov[x]=0.000`，
       本提交 `1000.000 / 0.000100 / 1000.000`；`StateMessageCarriesTheCovariance`
       在父提交行为下报 `covariance[0] evaluates to 0`。
+    - [x] **L8 里程计 QoS 对齐 `sensor_data`**（`decision.md` D44）：订阅从 `QoS(50)`
+      reliable 改成 `SensorDataQoS()`，启动打一行实际 QoS。`BestEffortOdometryUpstreamIsReceived`
+      父提交 `odom_received=0`（DDS 报 `RELIABILITY_QOS_POLICY` 不兼容）、本提交 146 帧全收；
+      13 条既有用例仍用 reliable 发布并通过，证明兼容方向没写反。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

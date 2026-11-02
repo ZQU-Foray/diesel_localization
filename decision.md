@@ -1434,3 +1434,41 @@ Consequences:
 - README「健康契约」新增「协方差契约（强制）」段；没有新增 ROS 参数，`.msg` 未变。
 
 状态：已实现（2026-11-03）。
+
+## D44 里程计订阅按 README 的 `sensor_data` 收，而不是比声明更严
+
+Context: README 的接口表把 `/aft_mapped_to_init` 声明为 `sensor_data`，但节点对它的订阅是
+`rclcpp::QoS(50)`（reliable，审计 L8）。上游 `point_lio` 按 `sensor_data` 用 best_effort 发布，
+DDS 判定 reliability 不兼容，于是**一帧都到不了回调**：节点看到的现象是「里程计断流」，
+reason 里只会说没收到，没有任何线索指向「是我们自己的订阅太严」。同一个文件里同时存在
+三套 QoS（输出 reliable/transient_local、点云 `SensorDataQoS`、里程计 `QoS(50)`），
+这种不一致本身就是缺陷的温床。
+
+Decision:
+1. 里程计订阅改 `rclcpp::SensorDataQoS()`（best_effort、depth 5），与点云订阅同一套语义。
+2. 订阅建立后打一条 INFO，把实际生效的 reliability 与 depth 打出来——现场排障时
+   「我们到底以什么 QoS 在收」必须能一眼看到，而不是去读代码猜。
+3. 外部位姿 `/localization/external_pose` 保持 `QoS(20)` reliable 不动：README 没有为它
+   声明 QoS，改它没有需求依据（`README.md` 是唯一需求来源）。
+
+Reason: 需求来源是 README，代码没有资格比自己的接口声明更严。兼容方向也不对称——
+best_effort 的订阅者能收 reliable 的发布者，反之不行，所以「反正我们的测试都用 reliable
+发布、收得到」不能当作不修的理由；恰恰是最需要它的场合（上游用 best_effort）会静默失败。
+
+Alternatives: ①保留 reliable，要求上游改成 reliable——被否决：`point_lio` 不在本仓，
+为一个订阅偏好去改跨仓话题契约，且违反 README；②保留 `QoS(50)` 只把 reliability 改
+best_effort——被否决：`sensor_data` 的 depth 5 语义是「只关心最新」，堆 50 帧旧里程计会把
+`last_odom_ns_` 往回带，而时间是这条链路的硬约束（D40）；③为 reliability 新增 ROS 参数——
+被否决：本轮不新增任何 ROS 参数（README 参数表 / `declare_parameter` / 3 份兵种 yaml
+三方零变更）。
+
+Consequences:
+- 新增节点级用例 `BestEffortOdometryUpstreamIsReceived`：上游按 README 用 best_effort 发布
+  1.5 s。父提交 `odom_received=0 odom_processed=0`，DDS 同时打出
+  `offering incompatible QoS ... Last incompatible policy: RELIABILITY_QOS_POLICY`；
+  本提交 `odom_received=146 odom_processed=146`，启动日志为
+  `odometry 订阅 QoS: best_effort, depth=5`。
+- 既有的 13 条节点级用例全部用 reliable 发布里程计，仍然通过——正好证明兼容方向没被写反。
+- README 无需改动：它本来就是这么声明的，改的是代码。
+
+状态：已实现（2026-11-03）。

@@ -178,9 +178,16 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
             std::bind(&LocalizationNode::on_cloud, this, std::placeholders::_1), cloud_options);
         rclcpp::SubscriptionOptions odom_options;
         odom_options.callback_group = odom_group_;
+        // README 的接口表把 `/aft_mapped_to_init` 声明为 sensor_data；上游 point_lio 以
+        // best_effort 发布，订阅端若坚持 reliable，DDS 会判 QoS 不兼容，一帧都到不了回调。
+        const auto odom_qos = rclcpp::SensorDataQoS();
         odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
-            odom_topic, rclcpp::QoS(50),
+            odom_topic, odom_qos,
             std::bind(&LocalizationNode::on_odometry, this, std::placeholders::_1), odom_options);
+        RCLCPP_INFO(get_logger(), "odometry 订阅 QoS: %s, depth=%zu（README 声明为 sensor_data）",
+                    odom_qos.reliability() == rclcpp::ReliabilityPolicy::BestEffort ? "best_effort"
+                                                                                    : "reliable",
+                    odom_qos.depth());
     }
     if (policy_ != foray::localization::PoseSourcePolicy::kLidar) {
         rclcpp::SubscriptionOptions external_options;
