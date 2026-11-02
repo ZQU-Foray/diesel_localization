@@ -151,7 +151,14 @@
       回执：父提交该表达式是裸字面量（`4.0 * config_.residual_threshold_m`，无来源注释）、
       头文件里没有这个常量；本提交新增用例 `UnmatchedPointsReportTheDocumentedResidual`
       把值钉成契约（无邻格簇 `1.200 m`、有邻格簇 `0.545 m`）。
-  - [ ] **P3 L18 ascii PCD 丢点计数**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
+    - [x] **L18 ascii PCD 坏行不再静默丢点**（`decision.md` D54）：新增
+      `PcdLoadResult::skipped_lines`、`PriorMapLoadResult::skipped_pcd_lines`、
+      `LocalizationNode::Diagnostics::skipped_pcd_lines`，两个节点在装载期 WARN。
+      回执：父提交（把计数逻辑退回）`L18 回执(NaN 行): ok=1 装载=2 点 跳过=0 行`、
+      `L18 回执(字段数不足): ok=1 装载=2 点 跳过=0 行`、节点级
+      `state=1 tf_published=6 跳过行数=0` 且日志无 WARN，三条全 FAILED；本提交三条回执
+      `跳过=1 行`、节点 `跳过行数=1` 且装载期打印
+      `[WARN] 先验地图有 1 行被跳过（字段数不足或 x/y/z 非有限），装载点数 3`。：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 

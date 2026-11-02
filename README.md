@@ -241,6 +241,10 @@ source: "RMUL 2027 field survey"
 头部畸形或声明与实际不符一律加载失败并进入「地图不可用」——**宁可启动失败，也不静默
 接受半张地图**（`decision.md` D41）。
 
+ascii 段里字段数不足的行、以及 x/y/z 为 NaN/inf 的点会被跳过（这类行本来就不是有效点）：
+装载仍然成功，但跳过行数会记进 `PcdLoadResult::skipped_lines` 并在装载时 **WARN 出来**
+（`decision.md` D54）。「地图比声明少几个点」不能是没人知道的事实。
+
 ## 健康契约
 
 | 状态 | 条件（持续去抖） | `pose_valid` | 下游行为 |

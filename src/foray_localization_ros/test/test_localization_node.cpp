@@ -347,6 +347,45 @@ bool drive_until_ok(NodeHarness& harness, std::chrono::milliseconds timeout,
     return false;
 }
 
+/// 一份 ascii PCD：声明 4 行，其中 1 行是 `nan` 点（PCD 里常见的无效回波占位）。
+/// 载入后只有 3 个点，跳过 1 行。
+std::string pcd_with_one_nan_row() {
+    return "VERSION 0.7\n"
+           "FIELDS x y z\n"
+           "SIZE 4 4 4\n"
+           "TYPE F F F\n"
+           "COUNT 1 1 1\n"
+           "WIDTH 4\n"
+           "HEIGHT 1\n"
+           "POINTS 4\n"
+           "DATA ascii\n"
+           "0 0 0\n"
+           "0.5 0 0\n"
+           "nan 0 0\n"
+           "1.0 0 0\n";
+}
+
+/// L18：地图里夹着坏行时，装载照旧成功、定位照旧进 OK——但「丢了几行」必须有出口。
+/// 父提交的节点对 NaN 行只是 `continue`：点数比声明少、日志里一个字都没有。
+TEST(LocalizationNodeTest, MapWithSkippedRowsStillLocalizes) {
+    TempMapDir map(pcd_with_one_nan_row());
+    NodeHarness harness(map_overrides(map), 5ms);
+
+    ASSERT_TRUE(drive_until_ok(harness, 5000ms)) << "带坏行的地图不该阻止定位进入 OK";
+    // 进入 OK 之后再多跑几拍：`/tf` 有自己的节拍，闸门也只放行 OK/DEGRADED。
+    harness.drive(300ms, 10ms, [&harness](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        harness.publish_cloud(10);
+    });
+    const auto diagnostics = harness.diagnostics();
+    printf("L18 回执(节点): state=%d tf_published=%zu 跳过行数=%zu\n", harness.last_state().state,
+           diagnostics.tf_published, diagnostics.skipped_pcd_lines);
+    // 计数本身由 map 包的 `SkipsInvalidPoints` / `CountsRowsWithMissingFields` 钉死；
+    // 这里补的是「装载成功后节点不会因此罢工」+「节点自己也拿得到这个数字」。
+    EXPECT_GT(diagnostics.tf_published, 0U);
+    EXPECT_EQ(diagnostics.skipped_pcd_lines, 1U) << "节点必须能报出地图丢了几行";
+}
+
 void print_source_receipt(const char* label, const StateRecord& state) {
     std::printf("L4 回执(%s): state=%u source=%u pose_valid=%d x=%.3f reason=%s\n", label,
                 static_cast<unsigned>(state.state), static_cast<unsigned>(state.source),

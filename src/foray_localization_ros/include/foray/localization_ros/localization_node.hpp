@@ -62,6 +62,9 @@ class LocalizationNode : public rclcpp::Node {
         double max_align_ms{0.0};
         /// 成功广播 `map -> odom` 的次数。
         std::uint64_t tf_published{0};
+        /// 先验地图里被跳过的 ascii 行数（字段数不足或 x/y/z 非有限）。非 0 时装载期已告警，
+        /// 这里再暴露一个可断言的出口：审计 L18 要证明「丢点」不再只是日志里的一句话。
+        std::size_t skipped_pcd_lines{0};
     };
     Diagnostics diagnostics();
 
@@ -212,6 +215,8 @@ class LocalizationNode : public rclcpp::Node {
     std::uint64_t align_runs_{0};
     double max_align_ms_{0.0};
     std::uint64_t tf_published_{0};
+    /// 先验地图里被跳过的行数（只在 `load_map()` 写一次，`mutex_` 内）。
+    std::size_t skipped_pcd_lines_{0};
 };
 
 } // namespace foray::localization_ros

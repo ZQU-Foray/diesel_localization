@@ -315,6 +315,10 @@ PcdLoadResult load_pcd(const std::filesystem::path& path) {
             }
             const std::vector<std::string> tokens = split_tokens(line);
             if (tokens.size() < header.fields.size()) {
+                // 字段数不足的行：既不是有效点，也不该被当成「文件到这就没了」。
+                // 两件事分开计：跳过数进 `skipped_lines`，`index` 保持不动，所以下面
+                // 「数据长度不足」仍然会在真正少行时触发（审计 L18）。
+                ++result.skipped_lines;
                 continue;
             }
             float x = 0.0F;
@@ -328,12 +332,19 @@ PcdLoadResult load_pcd(const std::filesystem::path& path) {
             }
             if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z)) {
                 result.cloud.points.emplace_back(x, y, z);
+            } else {
+                // NaN/inf 点是 PCD 里常见的「无效回波」占位，跳过是对的，但要计数（L18）。
+                ++result.skipped_lines;
             }
             ++index;
         }
         if (index < point_count) {
             result.error = "PCD ascii 数据长度不足（声明 " + std::to_string(point_count) +
-                           " 点，实际 " + std::to_string(index) + " 行）";
+                           " 点，实际 " + std::to_string(index) + " 行" +
+                           (result.skipped_lines > 0U
+                                ? "，另有 " + std::to_string(result.skipped_lines) + " 行被跳过"
+                                : std::string()) +
+                           "）";
             return result;
         }
     } else {

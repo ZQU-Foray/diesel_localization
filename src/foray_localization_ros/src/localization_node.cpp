@@ -232,11 +232,13 @@ void LocalizationNode::load_map() {
     // 「地图不可用」这一条可观测结论（audit L10）。
     bool loaded = false;
     std::string load_error;
+    std::size_t skipped_pcd_lines = 0U;
     try {
         const auto result =
             foray::localization_map::load_prior_map(map_manifest_, &map, verify_map_hashes_);
         loaded = result.ok;
         load_error = result.error;
+        skipped_pcd_lines = result.skipped_pcd_lines;
     } catch (const std::exception& exception) {
         load_error = exception.what();
     }
@@ -244,6 +246,18 @@ void LocalizationNode::load_map() {
         RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", load_error.c_str());
         mark_map_unavailable("加载先验地图失败: " + load_error);
         return;
+    }
+    // 被跳过的 ascii 行不能静默消失：地图里真的有空洞、或者导出工具写坏了格式，
+    // 都得让操作者在地图装载时就看到（审计 L18，decision.md D54）。
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        skipped_pcd_lines_ = skipped_pcd_lines;
+    }
+    if (skipped_pcd_lines > 0U) {
+        RCLCPP_WARN(get_logger(),
+                    "先验地图有 %zu 行被跳过（字段数不足或 x/y/z 非有限），装载点数 %zu；"
+                    "地图若有空洞请检查导出流程",
+                    skipped_pcd_lines, map.cloud.size());
     }
     if (map_voxel_leaf_m_ > 0.0) {
         map.cloud = foray::localization_map::voxel_downsample(map.cloud, map_voxel_leaf_m_);
@@ -765,6 +779,7 @@ LocalizationNode::Diagnostics LocalizationNode::diagnostics() {
     snapshot.align_runs = align_runs_;
     snapshot.max_align_ms = max_align_ms_;
     snapshot.tf_published = tf_published_;
+    snapshot.skipped_pcd_lines = skipped_pcd_lines_;
     return snapshot;
 }
 

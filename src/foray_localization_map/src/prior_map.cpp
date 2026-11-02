@@ -29,6 +29,8 @@ PriorMapLoadResult load_prior_map(const std::filesystem::path& manifest_path, Pr
         result.error = "3D 地图加载失败: " + pcd.error;
         return result;
     }
+    // 丢点不是错误，但也不能悄没声儿地过去（审计 L18）。
+    result.skipped_pcd_lines = pcd.skipped_lines;
 
     const PgmLoadResult pgm = load_pgm(manifest.grid_path());
     if (!pgm.ok) {
