@@ -15,6 +15,17 @@
 
 namespace foray::localization_map {
 
+/// 「地图上连一个邻居都没找到」的点，写进 `mean_residual_m` 的残差占位（单位：
+/// `residual_threshold_m` 的倍数）。
+///
+/// 语义：最近邻搜索只在「以该点为心、边长 = 阈值」的 27 个邻格里找目标点。一个都没找到时
+/// 只知道真实距离 **> 阈值**，上界未知。下游把 `mean_residual_m` 当「这簇离地图多远」的度量，
+/// 需要有限的数：写 0 会读成「贴着地图」（正好相反），写 inf 会让簇均值变成 NaN。
+/// 取 4 倍是「明显超出阈值、但仍然有限」的哨兵值——它恒大于 `residual_threshold_m`，任何
+/// 按阈值过滤的逻辑都不会把它当内点；不取更大是为了让簇平均残差仍可互相比较（不随阈值
+/// 放大而失去分辨率）。这不是标定值，也不是规则手册参数（`decision.md` D53）。
+inline constexpr double kUnmatchedResidualMultiple = 4.0;
+
 struct ResidualClustererConfig {
     /// 点到地图最近点的欧氏距离超过该值即为残差点（米）。
     double residual_threshold_m{0.3};

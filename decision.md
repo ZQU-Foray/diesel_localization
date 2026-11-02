@@ -1798,3 +1798,40 @@ Consequences:
   （1 处声明、0 处定义、0 处调用），删除后构建与测试不变，这两条一起构成完整证据。
 
 状态：已实现（2026-11-03）。
+
+## D53 「地图上没有对应物」的残差用一个具名的有限哨兵值，不用裸字面量 4.0
+
+Context: `cluster_against()` 对每个源点做「以该点为心、边长 = `residual_threshold_m`」的
+27 邻格搜索。一个目标点都没找到时，真实距离只有下界（> 阈值）、没有上界；父提交把这种点的
+残差写成 `4.0 * config_.residual_threshold_m`——一个没有名字、没有来源说明的字面量，默认阈值
+下等于 1.2 m。这个数会经 `mean_residual_m` 出现在 `DynamicObstacle` 消息里，被下游当成
+「这簇离地图多远」的度量，因此它其实是**消息契约的一部分**，却被埋在实现的一个三元表达式里。
+
+Decision:
+1. 提成公开常量 `inline constexpr double kUnmatchedResidualMultiple = 4.0;`
+   （`residual_clusterer.hpp`），注释写明它是「`residual_threshold_m` 的倍数」。
+2. 保留取值 4.0，不改算法行为。
+3. 用一条单测把值钉成契约：无邻格簇报 `4 × 阈值`，有邻格簇报真实距离，且两者必须分得开。
+
+Reason: 残差占位值要同时满足三件事——(a) 恒大于阈值，否则会被任何按阈值过滤的逻辑当成
+内点；(b) 有限，否则簇均值变 NaN、消息序列化不了；(c) 与「真实距离」处在同一量级，让
+`mean_residual_m` 仍可用于簇间比较。0 和 inf 分别破 (a) 与 (b)；比 4 更大的值会随阈值线性
+放大，让均值失去分辨率。这些理由必须和数字写在一起——数字会被人「顺手调大一点」，理由不会。
+
+Alternatives: ①改成 `std::numeric_limits<double>::infinity()` 并在下游过滤——被否决：
+`mean_residual_m` 是 `double` 字段，inf 会把整个簇的均值污染成 NaN；②改成 0 并在消息里加
+`bool matched` 字段——被否决：改 `.msg` 要走 `contracts.sha256` 与下游联调，收益不抵改动面；
+③把上限做成 ROS 参数——被否决：多一个没人会调的参数，违反 D28「不新增参数」的纪律；
+④用 `2 ×` 或 `10 ×`——被否决：2 倍离阈值太近（在 `residual_threshold_m` 稍有抖动时不再是
+「明显超出」），10 倍会让 30 cm 阈值下的均值涨到 3 m，与真实障碍物（≤1 m 量级）不可比。
+
+Consequences:
+- 无行为变化：默认阈值下无邻格簇的 `mean_residual_m` 仍是 1.2 m。
+- `test_residual_clusterer` 增 1 条用例 `UnmatchedPointsReportTheDocumentedResidual`：
+  `L17 回执: 无邻格簇残差=1.200 m（阈值 0.30 × 4.0）有邻格簇残差=0.545 m`，并断言占位值
+  恒大于阈值、真实距离不被占位值覆盖。
+- 本条没有「改前坏」的行为证据：父提交的数值是对的，坏的是「这个数字没有出处」。红回执因此
+  是静态事实——父提交里是裸字面量 `4.0 * config_.residual_threshold_m`、头文件里没有这个
+  常量；本提交把同一件事变成「一个名字 + 一段理由 + 一条钉住它的用例」。
+
+状态：已实现（2026-11-03）。

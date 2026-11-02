@@ -146,7 +146,12 @@
       点云戳偏差 `0 ms`。
     - [x] **附带 (b) 删掉死声明 `update_health()`**（`decision.md` D52）：全仓 1 处声明、0 处定义、
       0 处调用；删除后构建与 142 条测试不变（死声明没有可执行的「改前坏」证据，回执即调用图）。
-  - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
+    - [x] **L17 未匹配点的残差占位变成具名常量**（`decision.md` D53）：提
+      `kUnmatchedResidualMultiple = 4.0` 到公开头文件并写明「为什么是 4、为什么不能是 0/inf」。
+      回执：父提交该表达式是裸字面量（`4.0 * config_.residual_threshold_m`，无来源注释）、
+      头文件里没有这个常量；本提交新增用例 `UnmatchedPointsReportTheDocumentedResidual`
+      把值钉成契约（无邻格簇 `1.200 m`、有邻格簇 `0.545 m`）。
+  - [ ] **P3 L18 ascii PCD 丢点计数**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 

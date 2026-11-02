@@ -120,8 +120,11 @@ std::vector<ResidualCluster> ResidualClusterer::cluster_against(const PointCloud
         }
         if (!found || std::sqrt(best) > config_.residual_threshold_m) {
             residual_points.push_back(point);
+            // `!found` 时 `best` 仍是 inf：真实距离只有下限（> 阈值），这里写一个具名的有限
+            // 哨兵值，理由与取值见 `kUnmatchedResidualMultiple` 的注释（审计 L17）。
             residual_distances.push_back(std::isfinite(best) ? std::sqrt(best)
-                                                             : 4.0 * config_.residual_threshold_m);
+                                                             : kUnmatchedResidualMultiple *
+                                                                   config_.residual_threshold_m);
         }
     }
 
