@@ -1649,3 +1649,44 @@ Consequences:
 - `AlignOptions` 的语义不变，节点侧零改动（节点不调用 `set_options()`）。
 
 状态：已实现（2026-11-03）。
+
+## D49 可观性的旋转力臂取「被修正位姿的原点」，而不是本体位置
+
+Context: `analyze_observability()` 用点面残差构造信息矩阵，旋转自由度的雅可比是
+`(p - lever) × n`。父提交把 `lever` 写死成 `transform.translation()`，也就是配准时刻的
+**本体位置**——因为 `transform` 是 `map → base`。但下游被修正的量不是它：滤波启用时状态是
+`map → odom`，可观掩码用来决定「这一维要不要接受配准修正」。两套语义在 `odom` 原点与本体
+重合时完全等价（启动那一刻就是如此），一旦机器人沿场地跑出几十米就开始分叉：绕本体转
+δθ，本体只动 0；绕 `odom` 原点转同样的 δθ，本体要动 |`odom → base`|·δθ。审计 L15 指的就是
+这条错位。
+
+Decision:
+1. `analyze_observability()` 增加可选末参 `const Eigen::Vector3d* lever_origin = nullptr`：
+   `nullptr` 表示绕 `transform.translation()`（本体）转，与父提交一致。
+2. 节点在 `on_align_timer()` 里，与点云时间戳、`odom → base` 快照同一把锁内取
+   `map_to_odom_.translation()`，作为力臂传下去。人工重定位注入（`relocalizing`）本来就不做
+   方向约束，不受影响。
+3. 力臂仍然是「绕什么点转」的选择权，不是新参数：不新增 ROS 参数，也不改 `.msg/.srv`。
+
+Reason: 掩码的语义只有一种解释方式才说得通——它描述**被修正量**的分量是否被约束。既然 EKF
+修的是 `map → odom`，雅可比就必须对 `map → odom` 求导，旋转力臂只能是 `odom` 原点。力臂
+取错不会崩，只会安静地给出错的结论：40 m 杠杆把旋转信息放大到 10^6 量级，归一化后 4 个
+方向掉到阈值以下，于是「单面墙的法向平移」这种最可信的方向被判成不可观、修正被清零。
+
+Alternatives: ①继续用本体力臂、只把掩码注释成「本体坐标系下的可观性」——被否决：文档改了
+语义，下游仍然按 `map → odom` 用它，错位照旧；②把 EKF 状态改成 `map → base` 以迁就力臂——
+被否决：那会毁掉「量测之间 `map → odom` 应保持常数」这个预测模型（D24）；③力臂做成 ROS
+参数——被否决：它不是可调量，是「量测方程对谁求导」的数学事实，配错了只能错；④只在
+`|odom → base|` 超过某阈值时才切换力臂——被否决：同一帧的数据不应该有两种语义。
+
+Consequences:
+- `test_observability` 增 2 条用例。`RotationLeverFollowsTheCorrectedFrame`（地面 + 单墙，
+  机器人距 `odom` 原点 40 m）：父提交语义（力臂 = 本体）`unobs=5 cond=5.04e+06`、6 个方向里
+  4 个判断与正确语义相反；本提交 `unobs=1 cond=616`、翻转 4/6。`RotationLeverDefaultsToTheBodyPose`
+  守住默认值：不传力臂时信息矩阵与显式传本体重合逐位相等。
+- 父提交没有第 7 个参数，这条用例在父提交上无法按原样编译；红回执用「把调用改成本体语义
+  （6 参）」的方式取，跑出的正是父提交的真实行为。
+- `odom` 原点与本体重合时两种算法逐位相同，因此既有的三条用例与节点行为在启动阶段零变化。
+- README 的「可观测性与裁切」补一句力臂口径。
+
+状态：已实现（2026-11-03）。

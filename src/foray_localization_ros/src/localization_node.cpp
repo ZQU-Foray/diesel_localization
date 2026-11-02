@@ -520,6 +520,10 @@ void LocalizationNode::on_align_timer() {
     // 量测换算必须用「那一刻」的里程计。父提交在第二次加锁时才读 odom_to_base_，
     // 拿的是配准结束（100–200 ms 后）的值，于是每一次配准都把 v·Δ 记进 map → odom。
     Eigen::Isometry3d odom_to_base_at_cloud = Eigen::Isometry3d::Identity();
+    // 被修正的量是 `map → odom`（EKF 状态），不是 `map → base`（测量端）：旋转力臂要绕
+    // 前者的原点算，否则「绕本体转」与「绕里程计原点转」相差 |o_base - o_odom| 米，
+    // 掩码会给出与下游对不上的结论（审计 L15）。同样在放锁前快照。
+    Eigen::Vector3d map_to_odom_origin = Eigen::Vector3d::Zero();
     std::int64_t stamp_ns = 0;
     std::int64_t odom_ns = 0;
     // 人工重定位注入的是完整先验位姿，此时不该做方向约束——用户明确要的就是这一帧的解。
@@ -538,6 +542,7 @@ void LocalizationNode::on_align_timer() {
         has_cloud_ = false;
         last_align_stamp_ns_ = stamp_ns;
         odom_to_base_at_cloud = odom_to_base_;
+        map_to_odom_origin = map_to_odom_.translation();
         if (relocalize_pending_.exchange(false)) {
             guess = pending_map_to_base_;
             relocalizing = true;
@@ -574,7 +579,7 @@ void LocalizationNode::on_align_timer() {
     if (observability_enabled) {
         observability = foray::localization_map::analyze_observability(
             cloud, result.transform, *map_index_, *map_normals_, max_correspondence_distance_m_,
-            observability_ratio_threshold_);
+            observability_ratio_threshold_, &map_to_odom_origin);
         if (observability.degenerate()) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                                  "配准退化: %d/6 个方向不可观 (condition=%.1f 点面约束=%zu)",

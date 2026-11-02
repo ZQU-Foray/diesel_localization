@@ -130,6 +130,11 @@
       `GicpWithIterationCount`。`TargetCacheInvalidatesWhenContentChanges` 父提交
       `converged=0 iterations=0 inlier=1.000 error='GICP 未收敛（iterations=0）'`
       （对着旧靶标优化），本提交 `converged=1 iterations=1 inlier=1.000 x=0.050`。
+    - [x] **L15 可观性力臂改用被修正位姿的原点**（`decision.md` D49）：`analyze_observability()`
+      增可选 `lever_origin`（默认仍是 `transform.translation()`），节点传 `map_to_odom_` 原点。
+      回执：机器人距里程计原点 40 m 的「地面 + 单墙」场景，父提交语义 `unobs=5 cond=5.04e+06`、
+      判断翻转 0/6；本提交 `unobs=1 cond=616`、翻转 4/6。另加「不传 `lever_origin` 与父提交
+      逐位相同」的默认值守卫（`RotationLeverDefaultsToTheBodyPose`）。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

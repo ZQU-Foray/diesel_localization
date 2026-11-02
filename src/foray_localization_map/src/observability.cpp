@@ -144,14 +144,16 @@ double NormalCache::coverage() const {
 ObservabilityReport analyze_observability(const PointCloud& source, const Eigen::Isometry3d& transform,
                                           const PointCloudIndex& index, const NormalCache& normals,
                                           double max_correspondence_distance_m,
-                                          double eigenvalue_ratio_threshold) {
+                                          double eigenvalue_ratio_threshold,
+                                          const Eigen::Vector3d* lever_origin) {
     ObservabilityReport report;
     if (source.empty()) {
         return report;
     }
 
     // 第一遍收集雅可比与点面残差：σ² 要由这一帧的残差统计得出，所以必须分两遍。
-    const Eigen::Vector3d lever_origin = transform.translation();
+    // 力臂原点：默认绕本体转；调用方要修正外部位姿时必须传它的原点（审计 L15）。
+    const Eigen::Vector3d lever = lever_origin != nullptr ? *lever_origin : transform.translation();
     std::vector<Eigen::Matrix<double, kDofCount, 1>> jacobians;
     std::vector<double> residuals;
     jacobians.reserve(source.points.size());
@@ -175,10 +177,10 @@ ObservabilityReport analyze_observability(const PointCloud& source, const Eigen:
 
         Eigen::Matrix<double, kDofCount, 1> jacobian;
         jacobian.head<3>() = normal;
-        // 力臂相对当前位姿的平移，使旋转自由度代表「绕当前位姿的旋转」——
-        // 与位姿增量 delta 的语义一致。若用 map 原点做力臂，机器人离原点越远，
+        // 力臂相对 `lever` 的平移，使旋转自由度代表「绕 lever 的旋转」——
+        // 与下游被修正量的语义一致。若用 map 原点做力臂，机器人离原点越远，
         // 同一个旋转在投影里就会被放大成巨大的平移。
-        jacobian.tail<3>() = (moved - lever_origin).cross(normal);
+        jacobian.tail<3>() = (moved - lever).cross(normal);
         jacobians.push_back(jacobian);
         residuals.push_back(residual);
     }

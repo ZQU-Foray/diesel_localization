@@ -111,10 +111,17 @@ inline constexpr double kInfiniteConditionNumber = 1e12;
 /// `transform` 是 source→target 的当前估计；`index` 与 `normals` 必须对应同一个目标点云。
 /// `eigenvalue_ratio_threshold` 是归一化特征值的下限：低于它视为该方向不可观。
 /// 阈值应随内点数自适应（点数少时特征值噪声大），调用方按 `inlier_count` 调整后传入。
+///
+/// `lever_origin` 是旋转自由度所绕的点（世界坐标，单位 m）。旋转雅可比
+/// `(p - lever_origin) × n` 里的力臂必须与「谁被修正」一致：把旋转解释成「绕本体
+/// 转」和「绕里程计原点转」，等价的平移量可以差几十米，掩码也会随之翻转。传
+/// `nullptr` 表示绕 `transform.translation()`（本体）转；下游要修正的是 `map→odom`
+/// 这种外部位姿时，必须显式传它的原点（审计 L15）。
 ObservabilityReport analyze_observability(const PointCloud& source, const Eigen::Isometry3d& transform,
                                           const PointCloudIndex& index, const NormalCache& normals,
                                           double max_correspondence_distance_m,
-                                          double eigenvalue_ratio_threshold);
+                                          double eigenvalue_ratio_threshold,
+                                          const Eigen::Vector3d* lever_origin = nullptr);
 
 /// 把 6 维修正量投影到可观子空间，不可观方向上的分量被清零。
 ///
