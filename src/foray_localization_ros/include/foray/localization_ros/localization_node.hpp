@@ -79,7 +79,6 @@ class LocalizationNode : public rclcpp::Node {
 
     void load_map();
     void publish_state();
-    void update_health(const foray::localization_map::AlignResult& result, std::int64_t stamp_ns);
     void publish_tf();
 
     // 参数
