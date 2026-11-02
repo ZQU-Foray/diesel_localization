@@ -56,7 +56,10 @@
     实测提速 < 15% 则不引入
   - [ ] **i8 GUI 审查产物**：补 `odom → base_footprint` 后尝试 RViz；不可用则交付
     monitor 四联图 + 自包含 HTML 报告
-- [ ] **M10 审计整改 L1–L18**（`audit/tasks/02-foray_localization.md`，原则见 `decision.md` D28）
+- [x] **M10 审计整改 L1–L18**（`audit/tasks/02-foray_localization.md`，原则见 `decision.md` D28）
+  2026-11-03 全部 20 条落地：22 个提交在 `fix/audit-localization-02`（PR #7，base 为审计基线
+  `feat/fov-observability-ekf`），每条都留了「父提交红 / 修复后绿」回执；容器内
+  `FORAY_WITH_PCL=ON` 145 tests、`OFF` 138 tests 均 0 failures，四道门禁全绿。
   - [x] **测试基建**：节点实现进库、可注入配准后端、`Diagnostics` 计数
     （`decision.md` D29）
   - [x] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
@@ -190,6 +193,10 @@ M5b 的承接方 `foray_simulation` 已建成并取证（首次 `OK` 3.78 s、�
 默认 ON 报 **75 tests**、`-DFORAY_WITH_PCL=OFF` 报 **70 tests**，两轮均 0 failures——
 差的那 5 条就是 `test_pcl_gicp`（4 个用例 + 该文件在 CTest 里的汇总条目），map 包单独口径
 是 ON 34 / OFF 29。CI 的 `build-ros2` 保留，防的是「只在容器里验过」。
+2026-11-03 完成审计整改 M10：节点级测试基建落地后，`colcon test` 口径从 73 条涨到
+**145 条**（`FORAY_WITH_PCL=OFF` 138 条），20 条发现的验收用例全部按名字被
+`scripts/ci/test_ros_results.py` 断言存在（`decision.md` D55）；健康契约、协方差契约、
+执行器要求与地图硬上限都已写进 `README.md`，取舍记在 `decision.md` D30–D55。
 
 ## 模糊点与待确认项
 
