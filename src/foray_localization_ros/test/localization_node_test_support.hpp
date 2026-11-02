@@ -137,12 +137,40 @@ class TempMapDir {
 
 /// 只做「耗时」的配准后端：睡眠固定时长后把初值原样返回。
 /// 用它把配准耗时变成可控变量，从而单独观察执行器与健康判定（L1 验收）。
+/// 记录每次配准收到的源点数。测试用它给点云帧「编身份」：审计 L6 要证明配准期间
+/// 到达的那一帧确实进了下一轮配准，光看次数分不清是「它被配了」还是「老帧被配了」。
+class AlignCallLog {
+  public:
+    void record(std::size_t source_points) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        source_sizes_.push_back(source_points);
+    }
+
+    std::vector<std::size_t> source_sizes() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return source_sizes_;
+    }
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        source_sizes_.clear();
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    std::vector<std::size_t> source_sizes_;
+};
+
 class FixedDelayAligner : public Aligner {
   public:
-    explicit FixedDelayAligner(std::chrono::microseconds delay) : delay_(delay) {}
+    FixedDelayAligner(std::chrono::microseconds delay, std::shared_ptr<AlignCallLog> log)
+        : delay_(delay), log_(std::move(log)) {}
 
     AlignResult align(const PointCloud& source, const PointCloud& /*target*/,
                       const Eigen::Isometry3d& initial_guess) override {
+        if (log_) {
+            log_->record(source.size());
+        }
         std::this_thread::sleep_for(delay_);
         AlignResult result;
         result.converged = true;
@@ -156,6 +184,7 @@ class FixedDelayAligner : public Aligner {
 
   private:
     std::chrono::microseconds delay_;
+    std::shared_ptr<AlignCallLog> log_;
 };
 
 /// 记录到的状态消息（只留断言要用的字段）。
@@ -232,8 +261,9 @@ class NodeHarness {
     NodeHarness(std::vector<rclcpp::Parameter> overrides, std::chrono::microseconds align_delay) {
         auto options = rclcpp::NodeOptions();
         options.parameter_overrides(overrides);
+        align_log_ = std::make_shared<AlignCallLog>();
         node_ = std::make_unique<LocalizationNode>(
-            options, std::make_unique<FixedDelayAligner>(align_delay));
+            options, std::make_unique<FixedDelayAligner>(align_delay, align_log_));
         spy_ = std::make_shared<rclcpp::Node>("foray_localization_test_spy");
         state_sub_ = spy_->create_subscription<foray_localization_ros::msg::LocalizationState>(
             "/localization/state", rclcpp::QoS(50).reliable().transient_local(),
@@ -275,6 +305,7 @@ class NodeHarness {
     /// 以 sensor_data 语义发布一帧点云（节点侧的订阅就是 SensorDataQoS）。
     void publish_cloud(std::size_t count, const std::string& frame = "base_footprint") {
         const auto stamp = spy_->now();
+        last_cloud_stamp_ns_ = stamp.nanoseconds();
         const auto message = make_cloud_msg(frame, stamp, count);
         std::lock_guard<std::mutex> lock(publish_mutex_);
         if (!cloud_pub_) {
@@ -403,6 +434,12 @@ class NodeHarness {
 
     LocalizationNode::Diagnostics diagnostics() { return node_->diagnostics(); }
 
+    std::shared_ptr<AlignCallLog> align_log() const { return align_log_; }
+
+    /// 最近一次 `publish_cloud()` 用的时间戳（节点时钟，ns）。audit L6 要断言
+    /// `/tf` 上的 `map → odom` 用的是「被消费点云的时刻」而不是发布时刻。
+    std::int64_t last_cloud_stamp_ns() const { return last_cloud_stamp_ns_; }
+
   private:
     std::unique_ptr<LocalizationNode> node_;
     rclcpp::Node::SharedPtr spy_;
@@ -413,6 +450,8 @@ class NodeHarness {
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
     std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
+    std::int64_t last_cloud_stamp_ns_{0};
+    std::shared_ptr<AlignCallLog> align_log_;
     std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
     std::thread spinner_;
     std::mutex record_mutex_;

@@ -94,6 +94,11 @@
     协方差真实填充、odom QoS 对齐 `sensor_data`、ICP 弧度阈值、EKF 增益饱和与
     Joseph 形式、GICP 缓存指纹、可观性掩码统一到 `map → odom`、新鲜度判定统一时钟域、
     删除死声明
+    - [x] **L6 点云消费与 TF 时间戳**（`decision.md` D42）：`has_cloud_` 与消费戳在放锁
+      之前确定，`/tf` 的 `map → odom` 用被消费点云的时刻。`TransformIsStampedWithTheConsumedCloudTime`
+      父提交 TF 戳与最近点云戳最大偏差 50.150 ms、本提交 0.000 ms；
+      `CloudArrivingDuringAlignmentIsNotDropped` 父提交 600 ms 内只配到老帧（源点数 `{10}`），
+      本提交配到了配准期间到达的 77 点帧。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -329,6 +330,102 @@ TEST(LocalizationNodeTest, MapToOdomJitterUnderConstantVelocity) {
                 *bounds.second, spread);
     EXPECT_GE(registrations, 15U) << "配准次数太少，样本不足以下结论";
     EXPECT_LT(spread, 0.005) << "map → odom 在匀速直行时被配准时刻差拉出了漂移";
+}
+
+/// L6 用例（TF 时间戳）：`map → odom` 只在配准成功那一刻变化，所以它的 header.stamp
+/// 必须是「被消费点云的时刻」，不是发布时刻。父提交写 `now()`，于是 20 Hz 的 TF 流
+/// 每个样本都指着当前时刻，而位姿其实来自最多 200 ms 前的点云。
+TEST(LocalizationNodeTest, TransformIsStampedWithTheConsumedCloudTime) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 20ms);
+    ASSERT_TRUE(drive_until_ok(harness, std::chrono::milliseconds(6000))) << "预热没进 OK";
+
+    std::vector<std::int64_t> cloud_stamps;
+    std::vector<std::int64_t> tf_stamps;
+    harness.drive(std::chrono::milliseconds(3000), 20ms,
+                  [&harness, &cloud_stamps, &tf_stamps](std::int64_t elapsed_ms) {
+                      harness.publish_odom(0.0, 0.0);
+                      if (elapsed_ms % 100 < 20) {
+                          harness.publish_cloud(10);
+                          cloud_stamps.push_back(harness.last_cloud_stamp_ns());
+                      }
+                      geometry_msgs::msg::TransformStamped transform;
+                      if (harness.lookup_map_to_odom(&transform)) {
+                          tf_stamps.push_back(rclcpp::Time(transform.header.stamp).nanoseconds());
+                      }
+                  });
+
+    ASSERT_FALSE(tf_stamps.empty()) << "3 s 内一次 map → odom 都没发";
+    ASSERT_FALSE(cloud_stamps.empty()) << "3 s 内一帧点云都没发";
+    std::sort(tf_stamps.begin(), tf_stamps.end());
+    ASSERT_GE(std::unique(tf_stamps.begin(), tf_stamps.end()) - tf_stamps.begin(), 5)
+        << "TF 时间戳几乎没有变化，说明配准没在跑";
+
+    // 每个 TF 时间戳都必须能对上某一帧点云的时刻；对不上就说明它用的是发布时刻。
+    std::sort(cloud_stamps.begin(), cloud_stamps.end());
+    // 采样开始前那次配准留下的戳（上一帧点云早已不在本次记录里）不属于本窗口，
+    // 只从第一帧记录点云起算。
+    tf_stamps.erase(std::remove_if(tf_stamps.begin(), tf_stamps.end(),
+                                   [&cloud_stamps](std::int64_t stamp) {
+                                       return stamp < cloud_stamps.front();
+                                   }),
+                    tf_stamps.end());
+    const std::size_t in_window = tf_stamps.size();
+    std::int64_t worst_gap_ns = 0;
+    for (const std::int64_t stamp : tf_stamps) {
+        const auto it = std::lower_bound(cloud_stamps.begin(), cloud_stamps.end(), stamp);
+        std::int64_t gap = std::numeric_limits<std::int64_t>::max();
+        if (it != cloud_stamps.end()) {
+            gap = *it - stamp;
+        }
+        if (it != cloud_stamps.begin()) {
+            gap = std::min(gap, stamp - *(it - 1));
+        }
+        worst_gap_ns = std::max(worst_gap_ns, gap);
+    }
+    ASSERT_GT(in_window, 0U) << "采样窗口里一个 TF 样本都没有";
+    std::printf("L6 回执(TF 戳): samples=%zu 不同戳=%zu TF 与最近点云戳最大偏差=%.3fms\n",
+                in_window,
+                static_cast<std::size_t>(std::unique(tf_stamps.begin(), tf_stamps.end()) -
+                                         tf_stamps.begin()),
+                1e-6 * static_cast<double>(worst_gap_ns));
+    EXPECT_LT(1e-6 * static_cast<double>(worst_gap_ns), 2.0)
+        << "TF 时间戳对不上任何一帧被消费的点云：它用的是发布时刻";
+}
+
+/// L6 用例（丢帧）：配准要 200 ms，期间到达的点云必须留给下一轮，而不是在配准结束时
+/// 被当成「已消费」丢掉。父提交在放锁之后才无条件清 `has_cloud_`，于是这一帧消失。
+/// 帧的身份用点数表示（配准替身记下每次收到的源点数），这样才分得清「它被配了」还是
+/// 「配的还是上一帧」。
+TEST(LocalizationNodeTest, CloudArrivingDuringAlignmentIsNotDropped) {
+    TempMapDir map;
+    NodeHarness harness(map_overrides(map), 200ms);
+    ASSERT_TRUE(drive_until_ok(harness, std::chrono::milliseconds(8000))) << "预热没进 OK";
+
+    // 预热用的是 10 点云。配准替身在进入时记一笔，所以「日志刚出现一条」＝这次配准
+    // 正在跑（它要睡 200 ms），此刻发一帧 77 点的特殊帧，必然落在这次配准期间。
+    harness.align_log()->clear();
+    ASSERT_TRUE(
+        harness.wait_until([&harness]() { return !harness.align_log()->source_sizes().empty(); },
+                           std::chrono::milliseconds(2000)))
+        << "配准节拍停了";
+    harness.publish_cloud(77);
+    const auto consumed_before = harness.diagnostics().align_runs;
+    harness.drive(std::chrono::milliseconds(600), 5ms,
+                  [&harness](std::int64_t) { harness.publish_odom(0.0, 0.0); });
+    const auto consumed_after = harness.diagnostics().align_runs;
+
+    const auto sizes = harness.align_log()->source_sizes();
+    const bool special_frame_aligned = std::find(sizes.begin(), sizes.end(), 77) != sizes.end();
+    std::printf("L6 回执(丢帧): 配准期间到达 1 帧(77 点) → 600ms 内配准 %llu 次，"
+                "其中源帧点数={",
+                static_cast<unsigned long long>(consumed_after - consumed_before));
+    for (const auto size : sizes) {
+        std::printf("%zu,", size);
+    }
+    std::printf("} 该帧是否被消费=%s\n", special_frame_aligned ? "是" : "否");
+    EXPECT_TRUE(special_frame_aligned)
+        << "配准期间到达的那一帧被丢掉了：之后 600 ms 的配准用的还是上一帧";
 }
 
 } // namespace

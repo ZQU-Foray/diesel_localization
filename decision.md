@@ -1353,3 +1353,42 @@ Consequences:
 - 合法地图的行为不变（现有 4 条用例与三份兵种配置的地图都不受影响）。
 
 状态：已实现（2026-11-01）。
+
+## D42 点云「消费」发生在放锁之前，`/tf` 用那一帧点云的时刻打戳
+
+问题（`audit/tasks/02-foray_localization.md` L6）：`on_align_timer()` 在放锁跑完配准之后
+才无条件 `has_cloud_ = false`。配准要 30–200 ms，这期间的每一帧新点云都在 `on_cloud`
+里被写进 `latest_cloud_` 并置 `has_cloud_ = true`，然后又被配准结束时那句
+`has_cloud_ = false` 一句话抹掉——「没被配过」的帧被记成「已经配过了」。
+同一处还有第二个毛病：`publish_tf()` 用 `now()` 打戳，于是 20 Hz 的 `map → odom`
+永远标着当前时刻，而位姿其实来自最多一个配准周期之前的那帧点云。
+
+Decision:
+1. 「消费」= 在第一次加锁取快照的那一句里完成：`has_cloud_ = false` 与
+   `last_align_stamp_ns_ = stamp_ns` 紧跟在快照之后、放锁之前。配准期间到达的帧因此
+   留在 `latest_cloud_` 里，下一拍照常配。
+2. `publish_tf()` 的 `header.stamp` 用 `last_align_stamp_ns_`（被消费点云的
+   `header.stamp`，`RCL_ROS_TIME`），不用 `now()`。
+3. 删掉配准结束时那句 `has_cloud_ = false`。TF 闸门（D36）保证 `last_align_stamp_ns_`
+   在发出任何 TF 之前已经被赋过值，不存在用 0 号戳广播的路径。
+
+Reason: 位姿是「这一帧点云算出来的」，TF 就该带着这一帧的时刻。重复广播同一个时间戳是
+安全的（tf2 按 stamp 覆盖同一键，20 Hz 的流里相邻样本多数是同一个解），而用 `now()`
+会让下游把一个可能 200 ms 前的解当成刚算出来的——TF 与 `LocalizationState` 的时间轴
+就是这样分叉的。
+
+Alternatives: ①TF 用「配准结束时刻」并同步调整协方差——被否决，那只是把误差藏进协方差，
+时间轴仍然不是数据的时间轴；②配准期间继续接收并把帧排队——被否决，队列只会把「用最新帧」
+变成「用最旧帧」，且要引入新的无界缓冲。
+
+Consequences:
+- `test_localization_node` 增两条用例。`TransformIsStampedWithTheConsumedCloudTime`
+  （20 ms 后端、10 Hz 点云、20 Hz 采样 TF 戳）：父提交 TF 戳与最近一帧点云戳最大偏差
+  50.150 ms，本提交 0.000 ms。`CloudArrivingDuringAlignmentIsNotDropped`（200 ms 后端，
+  在一次配准中途发一帧 77 点的帧，帧身份用点数表示）：父提交随后 600 ms 内配到的源帧
+  只有上一帧的 10 点，本提交配到了那一帧 77 点。
+- 引入 `AlignCallLog`：配准替身把每次调用收到的源点数记下来，测试才能区分「新帧被配了」
+  还是「老帧又被配了一次」。这只是测试替身的观测点，不进入生产路径。
+- `map → odom` 的 TF 值不变，只有时间戳变；`state` 话题与协方差路径不受影响。
+
+状态：已实现（2026-11-02）。

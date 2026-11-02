@@ -522,6 +522,11 @@ void LocalizationNode::on_align_timer() {
         cloud = latest_cloud_;
         stamp_ns = latest_cloud_stamp_ns_;
         odom_ns = last_odom_ns_;
+        // 在放锁之前就把这一帧记成「已消费」并留下它的时间戳（audit L6）：父提交在配准结束
+        // 之后才清 `has_cloud_`，于是配准期间到达的新帧被当成「已消费」丢掉；TF 需要的
+        // 「这帧点云的时刻」也在这里唯一地确定下来，后面不再受 `now()` 影响。
+        has_cloud_ = false;
+        last_align_stamp_ns_ = stamp_ns;
         odom_to_base_at_cloud = odom_to_base_;
         if (relocalize_pending_.exchange(false)) {
             guess = pending_map_to_base_;
@@ -623,7 +628,6 @@ void LocalizationNode::on_align_timer() {
         }
         last_valid_ns_ = stamp_ns;
     }
-    has_cloud_ = false;
 }
 
 void LocalizationNode::publish_state() {
@@ -699,7 +703,9 @@ void LocalizationNode::publish_tf() {
         return;
     }
     geometry_msgs::msg::TransformStamped message;
-    message.header.stamp = now();
+    // 用被消费点云的时间戳而不是 `now()`（audit L6）：20 Hz 的 TF 流里，位姿只在配准成功
+    // 那一刻变化，把它标成当前时刻会让下游以为「这个解是刚刚算出来的」。
+    message.header.stamp = rclcpp::Time(last_align_stamp_ns_, RCL_ROS_TIME);
     message.header.frame_id = map_frame_;
     message.child_frame_id = odom_frame_;
     const Eigen::Isometry3d& transform = map_to_odom_;

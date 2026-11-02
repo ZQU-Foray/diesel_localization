@@ -181,6 +181,9 @@ class LocalizationNode : public rclcpp::Node {
     /// 最近一帧点云的节点接收时刻（ns）。用于判定激光断流，避免依赖消息时间戳。
     std::int64_t last_cloud_rx_ns_{0};
     bool has_cloud_{false};
+    /// 最近一次被配准消费的点云时间戳（ns）。TF `map → odom` 用它打戳（audit L6）：
+    /// 位姿是配准在那一刻算出来的，标成 `now()` 等于把最多 200 ms 前的解当成当前解。
+    std::int64_t last_align_stamp_ns_{0};
     Eigen::Isometry3d odom_to_base_{Eigen::Isometry3d::Identity()};
     std::int64_t last_odom_ns_{0};
     bool has_odom_{false};
