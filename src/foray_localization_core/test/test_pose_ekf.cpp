@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdio>
 
 namespace foray::localization {
 namespace {
@@ -82,6 +83,49 @@ TEST(PoseEkf, UnobservableDirectionTrustedLess) {
     EXPECT_GT(trusted.estimate().translation().x(), 0.2);
     EXPECT_LT(untrusted.estimate().translation().x(), 0.1);
     EXPECT_LT(untrusted.estimate().translation().x(), trusted.estimate().translation().x());
+}
+
+/// L12 用例一：不可观方向的权重必须始终是「约 1 %」，不能随外推时间爬回去。
+///
+/// 噪声倍数只决定增益有多小（P_ii / (P_ii + R·scale²)），决定不了它的上限：
+/// 中间没有配准、协方差按 0.05 m/s 一直长，分子追上分母后增益自己就大了。
+TEST(PoseEkf, UnobservableDirectionWeightStaysCapped) {
+    std::array<bool, kPoseDofCount> observable{};
+    observable.fill(true);
+    observable[0] = false;
+
+    PoseEkf ekf(enabled_config());
+    ekf.reset(Eigen::Isometry3d::Identity());
+    // 100 s 只外推不更新：协方差长到约 0.25 m²。
+    for (int index = 0; index < 500; ++index) {
+        ekf.predict(0.2);
+    }
+    const double covariance_x = ekf.covariance()(0, 0);
+    ekf.update(make_pose(1.0, 0.0, 0.0), &observable);
+    const double moved = ekf.estimate().translation().x();
+    std::printf("L12 回执(增益漂移): 外推 100s 后 cov[x]=%.4f 量测 1.0 m → 估计移动=%.4f "
+                "m（隐含增益 %.3f）\n",
+                covariance_x, moved, moved);
+    EXPECT_LT(moved, 0.02) << "不可观方向的增益被协方差增长推高了：1 m 的量测让病态方向动了 "
+                           << moved << " m";
+}
+
+/// L12 用例二：协方差不能无限增长——否则迟早溢出，且增益会贴着 1。
+TEST(PoseEkf, CovarianceStopsGrowing) {
+    PoseEkf ekf(enabled_config());
+    ekf.reset(Eigen::Isometry3d::Identity());
+    // 1e5 s（约 28 h）外推：无上限时平移方差会长到 250 m²。
+    for (int index = 0; index < 100000; ++index) {
+        ekf.predict(1.0);
+    }
+    const double translation = ekf.covariance()(0, 0);
+    const double rotation = ekf.covariance()(3, 3);
+    // 上限值写死在断言里而不是引用常量：本用例要能在父提交上编译并失败。
+    std::printf("L12 回执(方差上限): 外推 1e5 s 后 cov[x]=%.4f cov[rx]=%.4f（上限 1.00 / 0.25）\n",
+                translation, rotation);
+    EXPECT_LE(translation, 1.0);
+    EXPECT_LE(rotation, 0.25);
+    EXPECT_TRUE(std::isfinite(translation));
 }
 
 TEST(PoseEkf, RotationResidualTakesShortWayAround) {

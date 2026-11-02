@@ -185,7 +185,7 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `profile_enabled` | `false` | 分段耗时统计开关：每 5 s 打印一行 `to_pcl / voxel / align` 平均耗时与配准率。默认关，关闭时只有一次判空开销（`decision.md` D25） |
 | `filter_enabled` | `false` | 融合层 6 维 EKF 开关。`false` 时位姿更新与未引入滤波时逐字节一致（见 `decision.md` D24） |
 | `filter_measurement_noise_m` | `0.05` | EKF 平移量测噪声标准差（m）。默认取 0.25 m 体素先验图静止配准误差的实测值（D22/D26） |
-| `filter_unobservable_noise_scale` | `10.0` | EKF 对不可观方向的量测噪声倍数（标准差倍数）。取 10 表示该方向仅约 1 % 权重 |
+| `filter_unobservable_noise_scale` | `10.0` | EKF 对不可观方向的量测噪声倍数（标准差倍数），决定该方向权重有多小；权重本身另有 1 % 硬上限，不随外推时间回升（`decision.md` D46） |
 | `min_cluster_size` | `5` | 有效残差簇的最小点数 |
 | `max_cluster_size` | `500` | 有效残差簇的最大点数（更大视为地图差异） |
 | `state_rate_hz` | `50.0` | `LocalizationState` 发布频率（Hz） |

@@ -116,6 +116,11 @@
       就宣布收敛（本提交 10 次迭代、0.0000 rad）；`ExhaustedBudgetExplainsItself` 父提交
       `converged=0 error=''`（本提交给出完整阈值与增量）。注：审计说的「几乎不收敛」在合成
       点云上没有复现，实测定性为「量纲混用 + 失败无说明」，已写进 D45。
+    - [x] **L12 退化抑制不再随协方差增长失效**（`decision.md` D46）：不可观方向增益加
+      1 % 硬上限 `kMaxUnobservableGain`，`predict()` 给协方差对角加 `1.0 m²` / `0.25 rad²`
+      上限。`UnobservableDirectionWeightStaysCapped` 父提交外推 100 s 后 1 m 量测让病态方向
+      动 0.5025 m（隐含增益 0.502）、本提交 0.0100 m（0.010）；`CovarianceStopsGrowing`
+      父提交 `cov[x]=250.0025 cov[rx]=40.0001`、本提交 `1.0000 / 0.2500`。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

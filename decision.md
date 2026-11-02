@@ -1518,3 +1518,46 @@ Consequences:
   的阈值与增量说明（`localization_node.cpp` 的 warn 直接打印 `result.error`）。
 
 状态：已实现（2026-11-03）。
+
+## D46 不可观方向的增益锁在 1 % 上，协方差对角加硬上限
+
+Context: 融合层对不可观方向的抑制此前只靠一条「量测噪声倍数」：`filter_unobservable_noise_scale`
+= 10 把该方向的量测方差放大 100 倍，于是 `5 Hz` 下瞬间的卡尔曼增益只有约 1 %。但增益是
+`P_ii / (P_ii + R_ii)`，分子不是常数——`predict()` 每次按 0.05 m/s 往协方差里加，`P` 单调
+增长且没有任何上限。中间只要有一段时间没有配准（重定位、雷达断流、阈值放宽的窗口），分子
+就追上分母：实测外推 100 s 后 `cov[x] = 0.2525 m²`，1 m 的量测让被标为不可观的方向动了
+0.5025 m，隐含增益 0.502（审计 L12）。同一个没有上限的 `P` 还带来第二个隐患：外推 1e5 s
+后 `cov[x] = 250 m²`、`cov[rx] = 40 rad²`，配置了 `filter_enabled: true` 却长时间没有量测
+的场景里，这些数会一路涨到 `double` 都不敢再往上乘，增益则贴着 1——把「不信」变成「只信」。
+
+Decision:
+1. 不可观方向的增益加硬上限 `kMaxUnobservableGain = 0.01`：噪声倍数仍然决定「有多小」，
+   但即使 `P` 长大到使比例式算出的增益超过 1 %，该行增益也被压回 1 %。
+2. `predict()` 里给协方差对角加物理无关的上限 `kMaxVarianceTranslationM2 = 1.0`、
+   `kMaxVarianceRotationRad2 = 0.25`：只为保证永不溢出成 `inf`/`NaN`，不是精度断言。
+
+Reason: README 参数表承诺的语义是「该方向仅约 1 % 权重」。一条只靠噪声倍数实现的 1 % 是
+瞬时的——它描述的是「刚重置完的滤波器」，不是「跑了两分钟之后的滤波器」。把承诺写成硬上限，
+才让 README 那句话在任何运行时长下都成立。上限取 1 m² / 0.25 rad² 是因为健康契约里
+`lost_timeout_sec = 1.0`：正常流程中 1 s 没有配准就 LOST，`P` 根本涨不到这两条线，
+它们只在「配置错误/长期无量测」的路径上兜底。
+
+Alternatives: ①只把 `unobservable_noise_scale` 从 10 调到 100——被否决：那只是把拐点从
+100 s 推到 1000 s，`P` 依然无上限，且噪声倍数同时影响可观方向的滤波强度；
+②不可观方向直接零增益——被否决：README 与 D23 都说「少听而不是不听」，1 % 硬上限既满足
+「几乎不动」（1 m 量测只动 1 cm），也保留了「恰好成立的观测能进来一点」；
+③对 `P` 做归一化/滑动重置——被否决：那是把「不知道」换成「假装知道」，且在无配准时
+会掩盖退化（`HealthMonitor` 正需要 `P` 单调增长来体现「越来越不确定」）。
+
+Consequences:
+- `test_pose_ekf` 增 2 条用例，父提交上两条都红：
+  `UnobservableDirectionWeightStaysCapped`（外推 100 s 后给 1 m 量测）父提交
+  `cov[x]=0.2525 估计移动=0.5025 m（隐含增益 0.502）`；本提交 `估计移动=0.0100 m（隐含增益 0.010）`。
+  `CovarianceStopsGrowing`（外推 1e5 s）父提交 `cov[x]=250.0025 cov[rx]=40.0001`；本提交
+  `cov[x]=1.0000 cov[rx]=0.2500`。
+- 既有 `UnobservableDirectionTrustedLess`、`SmoothsAlternatingMeasurementNoise` 全部仍通过：
+  1 % 上限比原来的比例式更保守，没有改变「可观方向正常滤波」的行为。
+- README 参数表 `filter_unobservable_noise_scale` 一行补上「权重本身另有 1 % 硬上限」，
+  与代码一致；不新增任何参数。
+
+状态：已实现（2026-11-03）。

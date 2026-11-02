@@ -6,6 +6,7 @@
 
 #include "foray/localization/pose_ekf.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace foray::localization {
@@ -64,10 +65,14 @@ const Eigen::Isometry3d& PoseEkf::predict(double dt_sec) {
     const double rotation_var =
         config_.process_noise_rotation_rad * config_.process_noise_rotation_rad * dt_sec;
     for (int i = 0; i < 3; ++i) {
-        covariance_(i, i) += translation_var;
+        // 上限只管「别溢出」：外推到天荒地老时 P 会一直线性增长，而增益 P/(P+R) 跟着
+        // 涨到 1，等于把量测当唯一真值（审计 L12）。物理上 1 s 没配准就该 LOST 了，
+        // 所以 1 m² / 0.25 rad² 这两条线永远不会在正常流程里被踩到。
+        covariance_(i, i) =
+            std::min(covariance_(i, i) + translation_var, kMaxVarianceTranslationM2);
     }
     for (int i = 3; i < kPoseDofCount; ++i) {
-        covariance_(i, i) += rotation_var;
+        covariance_(i, i) = std::min(covariance_(i, i) + rotation_var, kMaxVarianceRotationRad2);
     }
     return estimate_;
 }
@@ -106,8 +111,17 @@ const Eigen::Isometry3d& PoseEkf::update(const Eigen::Isometry3d& measurement,
     const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> noise = variance.asDiagonal();
     const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> innovation = covariance_ + noise;
     // 协方差恒为正定对角占优，这里直接求逆；规模固定为 6x6，开销可忽略（D25 的计时会覆盖）。
-    const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> gain =
-        covariance_ * innovation.inverse();
+    Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> gain = covariance_ * innovation.inverse();
+    if (observable != nullptr) {
+        // 噪声倍数只决定「该方向的增益有多小」，不决定「最多有多大」——协方差增长会把
+        // 增益重新推回 0.5（审计 L12），所以这里给不可观方向加一道硬上限。
+        for (int i = 0; i < kPoseDofCount; ++i) {
+            if (!(*observable)[i] && gain(i, i) > kMaxUnobservableGain) {
+                gain.row(i).setZero();
+                gain(i, i) = kMaxUnobservableGain;
+            }
+        }
+    }
     estimate_ = from_delta(gain * residual) * estimate_;
     // Joseph 形式在这里没有必要：R 与 P 都对称正定，且量测是直接可观测量，
     // 简化形式 (I - K) P 在数值上足够稳定（由 test_pose_ekf 的收敛用例守住）。

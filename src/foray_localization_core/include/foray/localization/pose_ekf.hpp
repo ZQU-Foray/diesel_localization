@@ -27,10 +27,23 @@ struct PoseEkfConfig {
     double measurement_noise_translation_m{0.05};
     double measurement_noise_rotation_rad{0.01};
     /// 不可观方向的量测噪声倍数。按**标准差**倍数解释，方差按平方放大：
-    /// 取 10 表示该方向只有约 1 % 的权重——接近不信，但不硬切断（硬切断会让
+    /// 取 10 表示该方向的卡尔曼增益只有约 1 %——接近不信，但不硬切断（硬切断会让
     /// 恰好成立的观测也进不来，D23 已否定「整体拒绝」的做法）。
+    ///
+    /// 该倍数单独用不足以保证上面的 1 %（审计 L12）：协方差随外推时间单调增长，
+    /// 分子追上来之后增益会自己爬回去（100 s 外推后实测 0.5）。所以不可观方向的
+    /// 增益额外锁死在 `kMaxUnobservableGain` 上——倍数决定「多少」，锁决定「最多多少」。
     double unobservable_noise_scale{10.0};
 };
+
+/// 不可观方向的增益上限：README 参数表承诺「该方向仅约 1 % 权重」，这里把它写成硬上限，
+/// 否则协方差增长会让增益重新爬回 0.5（审计 L12）。
+inline constexpr double kMaxUnobservableGain = 0.01;
+
+/// 协方差对角上限：只防外推无限进行时溢出成 inf/NaN，不是物理断言。
+/// 平移 σ = 1 m、旋转 σ = 0.5 rad 已远超「1 s 无配准即 LOST」能容忍的量级。
+inline constexpr double kMaxVarianceTranslationM2 = 1.0;
+inline constexpr double kMaxVarianceRotationRad2 = 0.25;
 
 /// 误差状态 EKF。非线程安全，由节点在单线程内调用。
 class PoseEkf {
