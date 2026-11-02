@@ -1603,3 +1603,49 @@ Consequences:
   非有限值路径。
 
 状态：已实现（2026-11-03）。
+
+## D48 GICP 的 target 缓存按「地址 + 点数 + 内容指纹」识别，参数每帧下发，迭代次数读法收进一个类
+
+Context: `PclGicpAligner` 复用同一个 PCL GICP 对象、只在 target 变了才 `setInputTarget`（D27
+的 2 倍加速就是这里来的）。但「target 变了」的判据是**裸指针地址相等**（审计 L14）：
+`map = load_pcd(...)` 这种整体赋值不会改变对象地址，地址相等、内容全变，缓存照样命中。
+结果是 GICP 对着旧靶标优化、`evaluate_alignment()` 用新靶标算质量——读数变成
+「`converged=0` 或位姿来自旧地图，而内点率却是 1.0」这种自相矛盾的组合，而且失败原因指向
+「GICP 未收敛」，与真因（靶标没换）毫无关系。同一段代码还有两处隐式假设：PCL 参数只在
+`!configured` 时下发一次（`set_options()` 这类后置改参会被静默吞掉），以及直接读
+`gicp.nr_iterations_` 这个实现细节字段。
+
+Decision:
+1. 缓存键从「地址」改成「地址 + 点数 + 16 个等距采样点的坐标和（4 个 float）」；
+   任一不符即重新 `setInputTarget`。
+2. `setsMaximumIterations` / `setMaxCorrespondenceDistance` / `setTransformationEpsilon`
+   每帧下发（三个 setter 只是写成员），并新增 `set_options()`，下一帧生效。
+3. `nr_iterations_` 的读取收进 `.cpp` 内的一个派生类 `GicpWithIterationCount`，
+   PCL 版本耦合点从「散落在 `align()` 里」变成「一个类的一行」。
+
+Reason: 缓存的目的只是省掉「重算 target 协方差 + KdTree」这段最贵的预处理，前提必须是
+「target 真的没变」。地址相等只是「同一个对象」，不是「同一份数据」——保一个错误的缓存命中，
+代价是本地化静默对准旧地图，而这条路径恰恰出现在「地图重载」这种最需要正确的时刻。指纹用
+16 个等距采样点的坐标和，正常流程下命中时三个 float 和逐位相同、零误判；不命中时最坏情况
+是多算一次 target 预处理（就是 D27 之前的代价），不会算错。参数每帧下发的成本不可测量，
+换掉的是「配置一次」这种在 `set_options()` 面前必然失效的写法。
+
+Alternatives: ①缓存里存 `PointCloud` 的深拷贝并逐点比较——被否决：地图是几十万点，
+逐点比较比重新预处理还贵；②给 `PointCloud` 加版本号/`shared_ptr` 世代——被否决：要改
+公共数据结构与调用方，收益不抵改动面；③干脆不缓存、每帧 `setInputTarget`——被否决：
+离线基准里这是 2 倍开销（D27），而指纹方案把「命中」的收益完整保留；④保留
+`nr_iterations_` 的直读、只加注释——被否决：注释不能隔离版本耦合。字段改名时两种写法都会
+编译失败，区别在于失败的位置：直读让 `align()` 整体报错，派生类只让「取迭代次数」这一处
+报错，改动边界清楚。
+
+Consequences:
+- `test_pcl_gicp` 增 2 条用例。`TargetCacheInvalidatesWhenContentChanges`（同一个对象整体
+  平移 3 m，等价于地图重载）父提交 `converged=0 iterations=0 inlier=1.000 error='GICP 未收敛
+  （iterations=0）'`——失败但对的是旧靶标；本提交 `converged=1 iterations=1 inlier=1.000
+  x=0.050`。`OptionsTakeEffectAfterSetOptions`（`max_iterations` 从 1 改回 50）父提交因缺少
+  `set_options()` 无法编译，故红证据只取前一条，本条作为「参数每帧下发」的守卫。
+- 点云选择有讲究：格点在 0.3 m 间距下平移 3 m 与自身重合（正好 10 格），用它测「靶标换了」
+  会得到假阴性；用例改用 LCG 生成的非周期点云，注释里写明了原因。
+- `AlignOptions` 的语义不变，节点侧零改动（节点不调用 `set_options()`）。
+
+状态：已实现（2026-11-03）。

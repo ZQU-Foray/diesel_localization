@@ -125,6 +125,11 @@
       全判 `is_finite()`，非有限量测丢弃（不 reset、不透传）；协方差改 Joseph 形式并
       `(P+Pᵀ)/2`。父提交 `估计 x=nan`、`协方差有限=0`、`估计 x=9.0000 y=inf` 三条红；
       `CovarianceStaysSymmetricAndPositive` 两侧都通过，作为回归守卫保留。
+    - [x] **L14 GICP 缓存键与参数下发**（`decision.md` D48）：target 缓存改成「地址 + 点数 +
+      16 点内容指纹」，PCL 参数每帧下发并新增 `set_options()`，`nr_iterations_` 收进
+      `GicpWithIterationCount`。`TargetCacheInvalidatesWhenContentChanges` 父提交
+      `converged=0 iterations=0 inlier=1.000 error='GICP 未收敛（iterations=0）'`
+      （对着旧靶标优化），本提交 `converged=1 iterations=1 inlier=1.000 x=0.050`。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
