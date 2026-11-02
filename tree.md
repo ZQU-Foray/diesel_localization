@@ -47,7 +47,8 @@
 │       ├── check_contracts.py     契约快照：接口变更必须同步 contracts.sha256
 │       ├── check_params.py        README 参数表 ↔ declare_parameter ↔ 兵种配置三方一致
 │       ├── check_tree_doc.py      本文件与实际跟踪文件双向一致
-│       └── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
+│       ├── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
+│       └── test_ros_results.py    把 colcon 的 gtest 结果汇总成覆盖清单（pytest 收集）
 │
 ├── docs/
 │   └── probe-style.md             门禁风格探针（test_guards 注入缺陷用，无需求语义）

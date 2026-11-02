@@ -146,6 +146,7 @@
       点云戳偏差 `0 ms`。
     - [x] **附带 (b) 删掉死声明 `update_health()`**（`decision.md` D52）：全仓 1 处声明、0 处定义、
       0 处调用；删除后构建与 142 条测试不变（死声明没有可执行的「改前坏」证据，回执即调用图）。
+  - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
     - [x] **L17 未匹配点的残差占位变成具名常量**（`decision.md` D53）：提
       `kUnmatchedResidualMultiple = 4.0` 到公开头文件并写明「为什么是 4、为什么不能是 0/inf」。
       回执：父提交该表达式是裸字面量（`4.0 * config_.residual_threshold_m`，无来源注释）、
@@ -158,7 +159,12 @@
       `L18 回执(字段数不足): ok=1 装载=2 点 跳过=0 行`、节点级
       `state=1 tf_published=6 跳过行数=0` 且日志无 WARN，三条全 FAILED；本提交三条回执
       `跳过=1 行`、节点 `跳过行数=1` 且装载期打印
-      `[WARN] 先验地图有 1 行被跳过（字段数不足或 x/y/z 非有限），装载点数 3`。：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
+      `[WARN] 先验地图有 1 行被跳过（字段数不足或 x/y/z 非有限），装载点数 3`。
+  - [x] **验收清单入口**：新增 `scripts/ci/test_ros_results.py`，把 `colcon test` 写下的
+    gtest XML 汇总成覆盖清单，并按名字断言 20 条发现的验收用例都在（L14 两条只在
+    `FORAY_WITH_PCL=ON` 时要求）。回执：`python3 -m pytest scripts/ci/test_ros_results.py -q -s`
+    在 PCL ON 构建上 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed`；在
+    `FORAY_RESULTS_ROOT=/ws/build-nopcl` 上 `17 个 / 117 个` + `2 passed, 1 skipped`（`decision.md` D55）。
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 

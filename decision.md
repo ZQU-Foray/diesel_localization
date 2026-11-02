@@ -1874,3 +1874,50 @@ Consequences:
   `[WARN] 先验地图有 1 行被跳过（字段数不足或 x/y/z 非有限），装载点数 3`。
 
 状态：已实现（2026-11-03）。
+
+---
+
+## D55 验收清单要有一条命令汇总断言，不能只看 colcon 的退出码
+
+Date: 2026-11-03
+
+Context: 20 条审计发现各自的验收用例散在 18 个 gtest 结果文件里。`colcon test` 的退出码
+只反映「跑过的用例有没有失败」——某个用例被改名、被删、被 `#ifdef` 掉，退出码照样是 0。
+本轮就踩过两次：L14 的 `set_options` 用例在父提交上**编译不过**（父提交头文件没有这个成员），
+当时只能临时把它从测试文件里摘出来才拿到红回执；L18 的节点用例第一次写出来时
+`tf_published=0`，但那条断言并不在用例里，是靠人眼看日志发现的。CI 的 `build-ros2` /
+`build-nopcl` 作业同样只认退出码，等于「用例在不在」这件事没有任何东西守护。
+
+Decision: 新增 `scripts/ci/test_ros_results.py`（pytest 收集，仅标准库 + pytest）：
+1. 定位结果根目录：`FORAY_RESULTS_ROOT` → 仓库根下的 `build/` → 从仓库根逐级向上的
+   `build/`（docker 里仓库在 `/ws/src/...`、构建在 `/ws/build`，不写死路径）。
+2. 逐文件校验 gtest XML 自洽：`failures`/`errors` 为 0，且汇总的 `tests` 数与列出的
+   `testcase` 数相等——「用例少列了」本身就会被抓出来。
+3. 按**名字**断言 20 条发现的验收用例都在（`REQUIRED_CASES` 把用例名映射回发现编号），
+   L14 的两条放在 `PCL_CASES`，只在结果里出现 `pcl_gicp` 时才要求（`FORAY_WITH_PCL=OFF`
+   构建上 skip）。
+4. 入口命令固定为 `python3 -m pytest scripts/ci/test_ros_results.py -q`，与门禁自检
+   `test_guards.py` 同一套收集方式。
+
+Reason: 审计任务书的 DoD 要求「每条发现都能复现改前坏、修复后绿」，而可复现的前提是
+「用例存在且被跑过」。把这件事交给一条 pytest 命令，等于把「覆盖清单」从任务书里的
+文字描述变成可执行断言：删一个用例就不再是「没人注意」，而是这条命令红。
+
+Alternatives: ①在 `ci.yml` 里加第 11 个作业跑它——被否决：作业数写进 `tree.md` 与
+`plan.md` 的现况段，改一次要同步三处，而 `build-ros2` 作业已经跑过 `colcon test`，
+同一容器里再跑一条 pytest 属于本地/后续增强，不值得为它动 CI 作业清单（`decision.md`
+D16 的同一取舍：作业清单只写在 `ci.yml`）；②把清单写进 `plan.md` 就算数——被否决：
+文档会与结果文件分叉，这正是 D18 记过的教训；③用 `colcon test-result --all` 当验收——
+被否决：它只报计数、不认用例名，改名与删除都看不出来（本轮 verify 也证实它的输出不被
+测试摘要解析）。
+
+Consequences:
+- 影响面只在验证侧：仓库多一个 `scripts/ci/test_ros_results.py`，`tree.md` 同步登记；
+  运行期、参数表、消息契约都不变。
+- 新增用例要记得同时进 `REQUIRED_CASES`，否则它只是「跑过」而不受守护——这条写进文件
+  头注释，避免下一个人加完用例就结束。
+- 回执：PCL ON 构建 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed in 0.02s`；
+  `FORAY_RESULTS_ROOT=/ws/build-nopcl` 时 `17 个 / 117 个` + `2 passed, 1 skipped`
+  （跳过的是 L14 两条，因为该构建没有 PCL 后端）。
+
+状态：已实现（2026-11-03）。
