@@ -14,6 +14,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
@@ -188,6 +189,44 @@ class FixedDelayAligner : public Aligner {
     std::shared_ptr<AlignCallLog> log_;
 };
 
+/// 用 CPU 把配准时长「烧」出来，而不是 `sleep`。
+///
+/// 审计 L16 要证明「算法路径不再独占执行器」：`FixedDelayAligner` 睡着的时候会让出 CPU，
+/// 单线程执行器也能在那段时间里跑其他回调，测不出真实的争用。这里用忙等占住一个核心，
+/// 等价于 GICP 真在算的形态。
+class BusyAligner : public Aligner {
+  public:
+    BusyAligner(std::chrono::microseconds duration, std::shared_ptr<AlignCallLog> log)
+        : duration_(duration), log_(std::move(log)) {}
+
+    AlignResult align(const PointCloud& source, const PointCloud& target,
+                      const Eigen::Isometry3d& initial_guess) override {
+        if (log_) {
+            log_->record(source.size());
+        }
+        volatile double sink = 0.0;
+        const auto begin = std::chrono::steady_clock::now();
+        while (std::chrono::steady_clock::now() - begin < duration_) {
+            for (int index = 0; index < 256; ++index) {
+                sink = sink + static_cast<double>(index) * 1e-9;
+            }
+        }
+        (void)sink;
+        (void)target;
+        AlignResult result;
+        result.converged = true;
+        result.transform = initial_guess;
+        result.mean_residual_m = 0.0;
+        result.inlier_ratio = source.empty() ? 0.0 : 1.0;
+        result.iterations = 1;
+        return result;
+    }
+
+  private:
+    std::chrono::microseconds duration_;
+    std::shared_ptr<AlignCallLog> log_;
+};
+
 /// 记录到的状态消息（只留断言要用的字段）。
 struct StateRecord {
     std::uint8_t state{0};
@@ -261,12 +300,22 @@ make_external_pose_msg(const std::string& frame, const builtin_interfaces::msg::
 /// 测试若用单线程执行器，就测不出回调组划分是否真的解开了阻塞（L1）。
 class NodeHarness {
   public:
-    NodeHarness(std::vector<rclcpp::Parameter> overrides, std::chrono::microseconds align_delay) {
+    /// `threads` 传 1 表示用**单线程执行器**起来：那是 L1/L16 之前的产线配置，测试里用它
+    /// 当对照组，证明「算法路径不再独占执行器」这件事真的由执行器与回调组决定。
+    /// 传 0 用 rclcpp 默认（按硬件并发数）。
+    /// `busy_align` 为真时用忙等的 `BusyAligner`（占住 CPU），否则用 `FixedDelayAligner`。
+    NodeHarness(std::vector<rclcpp::Parameter> overrides, std::chrono::microseconds align_delay,
+                std::size_t threads = 0, bool busy_align = false) {
         auto options = rclcpp::NodeOptions();
         options.parameter_overrides(overrides);
         align_log_ = std::make_shared<AlignCallLog>();
-        node_ = std::make_unique<LocalizationNode>(
-            options, std::make_unique<FixedDelayAligner>(align_delay, align_log_));
+        if (busy_align) {
+            node_ = std::make_unique<LocalizationNode>(
+                options, std::make_unique<BusyAligner>(align_delay, align_log_));
+        } else {
+            node_ = std::make_unique<LocalizationNode>(
+                options, std::make_unique<FixedDelayAligner>(align_delay, align_log_));
+        }
         spy_ = std::make_shared<rclcpp::Node>("foray_localization_test_spy");
         state_sub_ = spy_->create_subscription<foray_localization_ros::msg::LocalizationState>(
             "/localization/state", rclcpp::QoS(50).reliable().transient_local(),
@@ -286,7 +335,12 @@ class NodeHarness {
             });
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(spy_->get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, spy_);
-        executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+        if (threads == 1) {
+            executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+        } else {
+            executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>(
+                rclcpp::ExecutorOptions(), threads);
+        }
         executor_->add_node(node_->get_node_base_interface());
         executor_->add_node(spy_);
         spinner_ = std::thread([this]() { executor_->spin(); });
@@ -456,7 +510,7 @@ class NodeHarness {
     std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
     std::int64_t last_cloud_stamp_ns_{0};
     std::shared_ptr<AlignCallLog> align_log_;
-    std::shared_ptr<rclcpp::executors::MultiThreadedExecutor> executor_;
+    std::shared_ptr<rclcpp::Executor> executor_;
     std::thread spinner_;
     std::mutex record_mutex_;
     std::mutex publish_mutex_;

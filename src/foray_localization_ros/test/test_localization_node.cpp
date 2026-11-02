@@ -135,6 +135,97 @@ TEST(LocalizationNodeTest, SlowAlignmentKeepsHealthOk) {
     EXPECT_GT(diagnostics.max_align_ms, 150.0);
 }
 
+/// L16：算法路径（5 Hz 配准 + 聚类 + 可观性）占住 CPU 时，里程计与状态发布不许被饿死。
+///
+/// 与 L1 的差别在负载形态与对照组：这里用**忙等**占核心（GICP 真在算的样子，不是
+/// 睡 200 ms 让出 CPU），并且把同样的负载放到单线程执行器上跑一遍——那一遍必须塌，
+/// 否则这条用例证明不了「是执行器与回调组把阻塞解开的」。
+TEST(LocalizationNodeTest, AlgorithmPathDoesNotStarveTheOdomPath) {
+    struct LoadOutcome {
+        double state_hz{0.0};
+        double max_odom_lag_sec{0.0};
+        std::uint64_t odom_processed{0};
+        std::uint64_t align_runs{0};
+        bool lost{false};
+        bool became_ok{false};
+        std::string reason;
+    };
+
+    // 跑两遍同一份负载，区别只在执行器线程数。
+    auto run = [](std::size_t threads) {
+        TempMapDir map;
+        std::vector<rclcpp::Parameter> overrides = {
+            rclcpp::Parameter("map_manifest", map.manifest_path()),
+            rclcpp::Parameter("align_rate_hz", 5.0),
+            rclcpp::Parameter("state_rate_hz", 50.0),
+            rclcpp::Parameter("odom_timeout_sec", 0.5),
+        };
+        // 150 ms 忙等 @ 5 Hz：算法路径占掉 75% 的一个核心。
+        NodeHarness harness(overrides, std::chrono::milliseconds(150), threads,
+                            /*busy_align=*/true);
+        LoadOutcome outcome;
+        int cloud_tick = 0;
+        harness.drive(std::chrono::milliseconds(2000), std::chrono::milliseconds(5),
+                      [&](std::int64_t) {
+                          harness.publish_odom(0.0, 0.0);
+                          if (++cloud_tick % 20 == 0) {
+                              harness.publish_cloud(10);
+                          }
+                          outcome.became_ok = outcome.became_ok || harness.last_state().state ==
+                                                                       LocalizationState::STATE_OK;
+                      });
+
+        const std::size_t states_before = harness.state_count();
+        harness.drive(std::chrono::milliseconds(2000), std::chrono::milliseconds(5),
+                      [&](std::int64_t elapsed_ms) {
+                          harness.publish_odom(0.0, 0.0);
+                          if (elapsed_ms % 100 < 5) {
+                              harness.publish_cloud(10);
+                          }
+                      });
+        const auto diagnostics = harness.diagnostics();
+        outcome.state_hz = static_cast<double>(harness.state_count() - states_before) / 2.0;
+        outcome.max_odom_lag_sec = diagnostics.max_odom_lag_sec;
+        outcome.odom_processed = diagnostics.odom_processed;
+        outcome.align_runs = diagnostics.align_runs;
+        outcome.lost = harness.has_lost();
+        outcome.reason = harness.last_state().reason;
+        return outcome;
+    };
+
+    const LoadOutcome multithreaded = run(0);
+    std::printf("L16 回执(多线程): became_ok=%d LOST=%d state_hz=%.1f max_odom_lag_ms=%.1f "
+                "odom_processed=%llu align_runs=%llu reason=%s\n",
+                multithreaded.became_ok ? 1 : 0, multithreaded.lost ? 1 : 0, multithreaded.state_hz,
+                1000.0 * multithreaded.max_odom_lag_sec,
+                static_cast<unsigned long long>(multithreaded.odom_processed),
+                static_cast<unsigned long long>(multithreaded.align_runs),
+                multithreaded.reason.c_str());
+
+    ASSERT_TRUE(multithreaded.became_ok)
+        << "忙等负载下没进 OK，用例前提不成立：reason=" << multithreaded.reason;
+    EXPECT_FALSE(multithreaded.lost) << "reason=" << multithreaded.reason;
+    EXPECT_LT(multithreaded.max_odom_lag_sec, 0.05)
+        << "里程计帧等了 " << 1000.0 * multithreaded.max_odom_lag_sec << " ms";
+    EXPECT_GE(multithreaded.state_hz, 0.8 * 50.0)
+        << "状态发布被算法路径拖到 " << multithreaded.state_hz << " Hz";
+    EXPECT_GT(multithreaded.align_runs, 0U);
+
+    // 对照组：同样的负载、单线程执行器（L1/L16 之前的产线配置）。它必须塌，否则上面几条
+    // 断言什么也没证明——这个负载根本没让执行器成为瓶颈。
+    const LoadOutcome single_threaded = run(1);
+    std::printf("L16 回执(单线程对照): became_ok=%d LOST=%d state_hz=%.1f max_odom_lag_ms=%.1f "
+                "odom_processed=%llu align_runs=%llu reason=%s\n",
+                single_threaded.became_ok ? 1 : 0, single_threaded.lost ? 1 : 0,
+                single_threaded.state_hz, 1000.0 * single_threaded.max_odom_lag_sec,
+                static_cast<unsigned long long>(single_threaded.odom_processed),
+                static_cast<unsigned long long>(single_threaded.align_runs),
+                single_threaded.reason.c_str());
+    EXPECT_TRUE(single_threaded.max_odom_lag_sec > 0.2 || single_threaded.state_hz < 25.0)
+        << "单线程对照组没有复现饥饿（lag=" << 1000.0 * single_threaded.max_odom_lag_sec
+        << " ms, state_hz=" << single_threaded.state_hz << "），本用例的负载不足";
+}
+
 /// L3：`Odometry.pose` 是 `odom → child_frame_id`，不是 `odom → base_footprint`。
 /// 上游（point_lio）按 `odom → livox_frame` 发布，两者的差就是雷达外参。
 /// 这里给一条 0.11 m 的 `base_footprint → livox_frame` 静态外参，看状态位姿是否按它换算。

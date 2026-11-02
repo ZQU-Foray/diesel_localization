@@ -260,6 +260,10 @@ source: "RMUL 2027 field survey"
 加载异常，都会把状态锁进 `LOST`，reason 以 `map unavailable:` 开头。此时 `map → odom`
 **一帧都不发**（`decision.md` D36）。
 
+算法路径（配准、残差聚类、可观测性）与里程计、点云、发布路径必须分属不同回调组并跑在
+多线程执行器上：5 Hz 配准单帧可达上百毫秒，任何让里程计回调排队的实现都会把积压误报成
+`odometry stale`（`decision.md` D30、D50）。
+
 `LocalizationState` 的字段：`header`（`stamp` 为状态快照时刻）、`pose`（`map → base_frame`）、
 **`pose_valid`**、`confidence`、`age_sec`（距上次有效配准）、`state`、`source`、`reason`。
 

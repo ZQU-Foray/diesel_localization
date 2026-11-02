@@ -1690,3 +1690,47 @@ Consequences:
 - README 的「可观测性与裁切」补一句力臂口径。
 
 状态：已实现（2026-11-03）。
+
+## D50 算法路径与里程计/发布路径分属不同回调组，跑在多线程执行器上
+
+Context: 这一版的算法路径全部是**同步、长耗时**的：5 Hz GICP 单帧几十到上百毫秒、残差聚类
+在整张地图上建索引、可观测性在收敛位姿上做一次特征分解。父提交把它们和 `sensor_data` 的
+里程计回调、50 Hz 的状态定时器塞进同一个单线程 `rclcpp::spin()`：配准在算的时候，里程计帧
+只能排队，等它跑完再被处理，`now - header.stamp` 于是远超 `odom_timeout_sec`，健康状态把
+「自己没来得及处理」误报成 `odometry stale`，一路退到 `LOST`。审计 L1 与 L16 是同一条根因
+的两面：L1 说症状（误报断流），L16 说范围（整条算法路径都在那一个线程里）。
+
+Decision:
+1. 生产入口改用 `rclcpp::executors::MultiThreadedExecutor`，线程数
+   `std::clamp(std::thread::hardware_concurrency(), 2, 4)`：下限 2 保证「算法」与「收发」
+   永远有各自的线程，上限 4 因为回调组已经按「谁阻塞谁」分好，再多只是让毫秒级回调互相插队。
+2. 六个互斥回调组：`odom`（里程计 + 外部位姿）、`cloud`（点云）、`align`（配准 + 可观测性）、
+   `obstacle`（残差聚类与障碍发布）、`publish`（状态与 TF 定时器）、`service`（重定位服务）。
+   同一组内互斥（同一个状态机不该被并发进入），组间并行。
+3. 分类告警：里程计没收到与收到但积压是两种成因，`reason` 分别写
+   `no odometry received` / `odometry stale: <age>s (no samples)` /
+   `odometry stale: <age>s (processing backlog <lag>s)`。
+4. 验收用「忙等配准 + 单线程对照组」：负载必须足以证明执行器起了作用，否则这条用例
+   什么也没验证。
+
+Reason: 「用多开线程糊弄」之所以被审计列为禁区，是因为把回调丢进线程池并不等于解开了阻塞——
+真正起作用的是回调组划分：组内互斥保住状态机不被并发踩，组间并行让里程计不必排在配准后面。
+线程数取 `clamp(hw, 2, 4)` 而不是 `hw`：配准与聚类本来就串在各自的组里，再多线程只会让
+`mutex_` 竞争加剧；取 `hw` 在 1 核机器上会退化成单线程，所以下限钉死 2。
+
+Alternatives: ①只把配准丢进 `std::thread`、其余保持单线程——被否决：`has_cloud_`/`map_to_odom_`
+的锁粒度会变成隐式约定，且回调组已经提供了同一件事的标准做法；②`AsyncParametersClient`/
+`rclcpp::Async` 服务化配准——被否决：引入一个进程内服务边界，延迟与失败模式都变复杂；
+③线程数直接取 `hardware_concurrency()`——被否决：1 核或 `hardware_concurrency()==0` 时
+退化，且没有证据表明超过 4 个线程有收益；④把 `state_rate_hz` 降下来让单线程也跑得动——
+被否决：契约要求 ≥ 50 Hz，降频率是拿需求迁就实现。
+
+Consequences:
+- `test_localization_node` 增 1 条用例 `AlgorithmPathDoesNotStarveTheOdomPath`：150 ms 忙等
+  配准 @ 5 Hz 跑 2 s，多线程回执 `LOST=0 state_hz=50.0 max_odom_lag_ms=1.3 odom_processed=760
+  align_runs=19`；同一条用例里再跑一遍单线程执行器作对照组，回执 `state_hz=15.0`——对照组
+  就是「改前坏」的可复现证据，且它是断言的一部分：对照组不塌说明负载不足以证明结论。
+- 测试台 `NodeHarness` 增 `threads`（1 = 单线程执行器）与 `BusyAligner`（忙等而不是 `sleep`）。
+- 生产入口之外没有代码改动：单测直接把节点放进自己的执行器里 spin，不受 `main` 影响。
+
+状态：已实现（2026-11-03）。

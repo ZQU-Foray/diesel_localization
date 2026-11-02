@@ -135,6 +135,11 @@
       回执：机器人距里程计原点 40 m 的「地面 + 单墙」场景，父提交语义 `unobs=5 cond=5.04e+06`、
       判断翻转 0/6；本提交 `unobs=1 cond=616`、翻转 4/6。另加「不传 `lever_origin` 与父提交
       逐位相同」的默认值守卫（`RotationLeverDefaultsToTheBodyPose`）。
+    - [x] **L16 算法路径不再独占执行器**（`decision.md` D50）：`MultiThreadedExecutor`（线程数
+      `clamp(hw, 2, 4)`）+ 六个互斥回调组（odom / cloud / align / obstacle / publish / service），
+      配准与聚类各占一组。回执（150 ms 忙等配准 @ 5 Hz，2 s 窗口）：多线程 `LOST=0 state_hz=50.0
+      max_odom_lag_ms=1.3 align_runs=19`；对照组（同一负载放单线程执行器）`state_hz=15.0`——
+      对照组已写进同一条用例，作为「负载足以证明执行器起作用」的证据。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
