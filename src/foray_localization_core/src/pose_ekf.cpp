@@ -12,6 +12,16 @@
 namespace foray::localization {
 namespace {
 
+// 位姿的每个分量都必须是有限数：配准失败、上游里程计被除零污染、TF 里混进 NaN
+// 都会走到这里，而一旦 NaN 进了估计值或协方差，之后每一帧都被它污染（审计 L13）。
+bool is_finite(const Eigen::Isometry3d& pose) {
+    if (!pose.matrix().allFinite()) {
+        return false;
+    }
+    const Eigen::AngleAxisd rotation(pose.linear());
+    return std::isfinite(rotation.angle());
+}
+
 Eigen::Matrix<double, kPoseDofCount, 1> to_delta(const Eigen::Isometry3d& delta) {
     Eigen::Matrix<double, kPoseDofCount, 1> vector;
     vector.head<3>() = delta.translation();
@@ -37,6 +47,9 @@ Eigen::Isometry3d from_delta(const Eigen::Matrix<double, kPoseDofCount, 1>& vect
 PoseEkf::PoseEkf(PoseEkfConfig config) : config_(config) {}
 
 void PoseEkf::reset(const Eigen::Isometry3d& estimate) {
+    if (!is_finite(estimate)) {
+        return; // 硬切也不能把 NaN 装进状态：保持上一次的估计与协方差。
+    }
     estimate_ = estimate;
     // 硬切之后的不确定度按「等于一次量测的不确定度」起步：既不把刚注入的位姿当成
     // 绝对真值（那会让后续量测全被忽略），也不给它一个 1 m 量级的不确定度
@@ -55,7 +68,8 @@ void PoseEkf::reset(const Eigen::Isometry3d& estimate) {
 }
 
 const Eigen::Isometry3d& PoseEkf::predict(double dt_sec) {
-    if (!config_.enabled || dt_sec <= 0.0) {
+    // `dt_sec <= 0.0` 挡不住 NaN（NaN 的每次比较都为假），必须单独判有限性。
+    if (!config_.enabled || !std::isfinite(dt_sec) || dt_sec <= 0.0) {
         return estimate_;
     }
     // 常值预测：map -> odom 在两帧配准之间就靠里程计维持，估计值不动，
@@ -81,7 +95,15 @@ const Eigen::Isometry3d& PoseEkf::update(const Eigen::Isometry3d& measurement,
                                          const std::array<bool, kPoseDofCount>* observable) {
     // 关闭时逐字节透传：这是「默认配置与改造前等价」的落点（D24）。
     if (!config_.enabled) {
-        estimate_ = measurement;
+        if (is_finite(measurement)) {
+            estimate_ = measurement;
+        }
+        return estimate_;
+    }
+
+    // 非有限量测直接丢弃：不 reset、不透传、不写进协方差。宁可这一帧不更新，
+    // 也不能让 NaN 从此刻起污染每一帧输出（审计 L13）。
+    if (!is_finite(measurement) || !is_finite(estimate_)) {
         return estimate_;
     }
 
@@ -123,10 +145,15 @@ const Eigen::Isometry3d& PoseEkf::update(const Eigen::Isometry3d& measurement,
         }
     }
     estimate_ = from_delta(gain * residual) * estimate_;
-    // Joseph 形式在这里没有必要：R 与 P 都对称正定，且量测是直接可观测量，
-    // 简化形式 (I - K) P 在数值上足够稳定（由 test_pose_ekf 的收敛用例守住）。
-    covariance_ = (Eigen::Matrix<double, kPoseDofCount, kPoseDofCount>::Identity() - gain) *
-                  covariance_;
+    // Joseph 形式而不是 (I - K) P：前者对任意增益都保持对称半正定，后者只在增益恰好最优时
+    // 等价——而 D46 的 1 % 上限本身就是「非最优增益」。之后再做一次对称化，消掉矩阵相乘
+    // 与相减留下的最后一位漂移（审计 L13）。
+    const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> identity =
+        Eigen::Matrix<double, kPoseDofCount, kPoseDofCount>::Identity();
+    const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> residual_operator = identity - gain;
+    covariance_ = residual_operator * covariance_ * residual_operator.transpose() +
+                  gain * noise * gain.transpose();
+    covariance_ = 0.5 * (covariance_ + covariance_.transpose());
     return estimate_;
 }
 

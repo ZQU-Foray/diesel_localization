@@ -121,6 +121,10 @@
       上限。`UnobservableDirectionWeightStaysCapped` 父提交外推 100 s 后 1 m 量测让病态方向
       动 0.5025 m（隐含增益 0.502）、本提交 0.0100 m（0.010）；`CovarianceStopsGrowing`
       父提交 `cov[x]=250.0025 cov[rx]=40.0001`、本提交 `1.0000 / 0.2500`。
+    - [x] **L13 EKF 入口挡非有限值、Joseph + 对称化**（`decision.md` D47）：`reset/predict/update`
+      全判 `is_finite()`，非有限量测丢弃（不 reset、不透传）；协方差改 Joseph 形式并
+      `(P+Pᵀ)/2`。父提交 `估计 x=nan`、`协方差有限=0`、`估计 x=9.0000 y=inf` 三条红；
+      `CovarianceStaysSymmetricAndPositive` 两侧都通过，作为回归守卫保留。
   - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）

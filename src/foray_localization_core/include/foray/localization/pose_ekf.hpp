@@ -51,13 +51,18 @@ class PoseEkf {
     explicit PoseEkf(PoseEkfConfig config = {});
 
     /// 硬切：直接跳到给定位姿并重置协方差。重定位与滤波器首次启动都走这里。
+    /// 给定位姿非有限时直接忽略（保持原状态）。
     void reset(const Eigen::Isometry3d& estimate);
 
     /// 常值预测：估计值不变，协方差按 `dt_sec` 增长。`dt_sec <= 0` 时不做任何事。
     const Eigen::Isometry3d& predict(double dt_sec);
 
     /// 量测更新。`observable` 为空表示六个方向都视为可观；
-    /// 否则未标记的方向按 `unobservable_noise_scale` 放大量测方差。
+    /// 否则未标记的方向按 `unobservable_noise_scale` 放大量测方差，且增益不超过
+    /// `kMaxUnobservableGain`。
+    ///
+    /// 非有限（NaN/inf）的量测会被**丢弃**：估计值与协方差保持不变，也不触发 reset——
+    /// 丢一帧比让 NaN 污染此后每一帧便宜得多（decision.md D47）。
     const Eigen::Isometry3d& update(const Eigen::Isometry3d& measurement,
                                     const std::array<bool, kPoseDofCount>* observable = nullptr);
 
