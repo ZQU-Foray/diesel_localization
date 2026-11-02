@@ -226,6 +226,41 @@ TEST(LocalizationNodeTest, AlgorithmPathDoesNotStarveTheOdomPath) {
         << " ms, state_hz=" << single_threaded.state_hz << "），本用例的负载不足";
 }
 
+/// 附带 (a)：聚类的新鲜度必须用**节点时钟**上的「收到时刻」判，不能用点云 header 里
+/// 的传感器时间戳——两个时钟域相差几秒时，跨域相减得到的是无意义的差值。
+TEST(LocalizationNodeTest, ObstacleClusteringUsesReceiveTimeNotSensorStamp) {
+    TempMapDir map;
+    std::vector<rclcpp::Parameter> overrides = {
+        rclcpp::Parameter("map_manifest", map.manifest_path()),
+        // 聚类跑得比配准快，配准慢一点让「点云被取走」的时刻尽量少影响观测。
+        rclcpp::Parameter("obstacle_rate_hz", 50.0),
+        rclcpp::Parameter("align_rate_hz", 1.0),
+    };
+    NodeHarness harness(overrides, std::chrono::milliseconds(20));
+
+    // 传感器时钟比节点时钟慢 10 s：父提交的 `now - header.stamp` 于是恒 > 1 s，
+    // 每一帧新鲜点云都被判成过期，`/localization/dynamic_obstacles` 一帧都不发。
+    constexpr std::int64_t kSensorClockSkewNs = -10'000'000'000LL;
+    int cloud_tick = 0;
+    harness.drive(std::chrono::milliseconds(2000), std::chrono::milliseconds(5), [&](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        if (++cloud_tick % 20 == 0) {
+            harness.publish_cloud(10, "base_footprint", kSensorClockSkewNs);
+        }
+    });
+
+    const std::int64_t published_stamp = harness.last_obstacle_stamp_ns();
+    const std::int64_t cloud_stamp = harness.last_cloud_stamp_ns();
+    std::printf("附带(a) 回执: 传感器时钟偏移 -10s，2000ms 内障碍帧数=%zu 发布戳偏差=%lld ms\n",
+                harness.obstacle_count(),
+                static_cast<long long>((published_stamp - cloud_stamp) / 1000000LL));
+
+    EXPECT_GT(harness.obstacle_count(), 0U)
+        << "点云在新鲜期内到达，聚类却被跨时钟域的比较判成了过期";
+    // 发布出去的时间戳仍然是数据自身的时刻（不改消息语义，只改判新鲜度用的时钟）。
+    EXPECT_EQ(published_stamp, cloud_stamp);
+}
+
 /// L3：`Odometry.pose` 是 `odom → child_frame_id`，不是 `odom → base_footprint`。
 /// 上游（point_lio）按 `odom → livox_frame` 发布，两者的差就是雷达外参。
 /// 这里给一条 0.11 m 的 `base_footprint → livox_frame` 静态外参，看状态位姿是否按它换算。

@@ -780,17 +780,24 @@ void LocalizationNode::on_obstacle_timer() {
     foray::localization_map::PointCloud cloud;
     Eigen::Isometry3d current_map_to_base;
     std::int64_t stamp_ns = 0;
+    std::int64_t received_ns = 0;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!has_map_ || !has_cloud_) {
+        // 聚类处理的是「最近收到的那帧点云」，不是「等待配准的那帧」：`has_cloud_` 在配准
+        // 取走数据的瞬间就被清掉（audit L6），用它当闸门会让 10 Hz 的聚类几乎每拍都提前返回。
+        if (!has_map_ || last_cloud_rx_ns_ <= 0) {
             return;
         }
         cloud = latest_cloud_;
         current_map_to_base = map_to_base_;
         stamp_ns = latest_cloud_stamp_ns_;
+        received_ns = last_cloud_rx_ns_;
     }
-    // has_cloud_ 会被配准线程消费，这里用时间戳判断数据是否仍然新鲜。
-    if (now().nanoseconds() - stamp_ns > 1000000000LL) {
+    // 新鲜度用**节点时钟**上的「收到时刻」判，不用点云 header 里的传感器时间戳：两者是不同的
+    // 时钟域，传感器时钟与节点时钟差几秒（或上游用仿真时间）时，跨域相减得到的是无意义的差值
+    // ——要么把新鲜数据当过期丢掉，要么把过期数据当新鲜用（audit 附带 a）。
+    constexpr std::int64_t kObstacleCloudFreshnessNs = 1'000'000'000LL;
+    if (now().nanoseconds() - received_ns > kObstacleCloudFreshnessNs) {
         return;
     }
     const auto in_map = foray::localization_map::transform_points(cloud, current_map_to_base);

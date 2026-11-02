@@ -88,7 +88,8 @@ MID360 点云 ──► point_lio（仅里程计）──► T_odom_lidar
   丢失后调用 `/localization/relocalize`（`MODE_GEOMETRIC` + `map → base_frame` 初值）注入，
   状态机回到 `INITIALIZING` 直到收敛。自动全局重定位（ONNX Scan Context）为可选 P2，默认关闭。
 - **动态物体**：配准残差聚类，输出质心/尺寸/点数/置信度，**无类别标号**；
-  与「地图过期」通过持续时间、允许动态区域标注区分。
+  与「地图过期」通过持续时间、允许动态区域标注区分。聚类判「这帧点云还新鲜吗」用的是节点
+  时钟上的收到时刻，与点云 header 的传感器时间戳无关（两者是不同时钟域，`decision.md` D51）。
 
 ## 目录布局
 

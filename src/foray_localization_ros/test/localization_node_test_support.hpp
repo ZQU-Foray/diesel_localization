@@ -8,6 +8,7 @@
 
 #include "foray/localization/sha256.hpp"
 #include "foray/localization_ros/localization_node.hpp"
+#include "foray_localization_ros/msg/dynamic_obstacle_array.hpp"
 #include "foray_localization_ros/msg/localization_state.hpp"
 
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
@@ -333,6 +334,17 @@ class NodeHarness {
                     static_cast<std::int64_t>(message->header.stamp.nanosec);
                 states_.push_back(record);
             });
+        obstacle_sub_ =
+            spy_->create_subscription<foray_localization_ros::msg::DynamicObstacleArray>(
+                "/localization/dynamic_obstacles", rclcpp::QoS(10).reliable(),
+                [this](const foray_localization_ros::msg::DynamicObstacleArray::ConstSharedPtr
+                           message) {
+                    std::lock_guard<std::mutex> lock(record_mutex_);
+                    last_obstacle_stamp_ns_ =
+                        static_cast<std::int64_t>(message->header.stamp.sec) * 1000000000LL +
+                        static_cast<std::int64_t>(message->header.stamp.nanosec);
+                    obstacle_count_ = obstacle_count_ + 1;
+                });
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(spy_->get_clock());
         tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, spy_);
         if (threads == 1) {
@@ -361,8 +373,14 @@ class NodeHarness {
     rclcpp::Node& spy() { return *spy_; }
 
     /// 以 sensor_data 语义发布一帧点云（节点侧的订阅就是 SensorDataQoS）。
-    void publish_cloud(std::size_t count, const std::string& frame = "base_footprint") {
-        const auto stamp = spy_->now();
+    /// `stamp_offset_ns` 只改 header 时间戳（模拟传感器时钟与节点时钟的偏差），
+    /// 收到时刻仍然是节点时钟——审计附带 (a) 要区分的正是这两个时钟域。
+    void publish_cloud(std::size_t count, const std::string& frame = "base_footprint",
+                       std::int64_t stamp_offset_ns = 0) {
+        auto stamp = spy_->now();
+        if (stamp_offset_ns != 0) {
+            stamp = rclcpp::Time(stamp.nanoseconds() + stamp_offset_ns);
+        }
         last_cloud_stamp_ns_ = stamp.nanoseconds();
         const auto message = make_cloud_msg(frame, stamp, count);
         std::lock_guard<std::mutex> lock(publish_mutex_);
@@ -498,6 +516,18 @@ class NodeHarness {
     /// `/tf` 上的 `map → odom` 用的是「被消费点云的时刻」而不是发布时刻。
     std::int64_t last_cloud_stamp_ns() const { return last_cloud_stamp_ns_; }
 
+    /// 收到的 `/localization/dynamic_obstacles` 帧数（审计附带 (a)）。
+    std::size_t obstacle_count() {
+        std::lock_guard<std::mutex> lock(record_mutex_);
+        return obstacle_count_;
+    }
+
+    /// 最近一帧障碍消息 header 上的时间戳（应当就是被处理那帧点云的时间戳）。
+    std::int64_t last_obstacle_stamp_ns() {
+        std::lock_guard<std::mutex> lock(record_mutex_);
+        return last_obstacle_stamp_ns_;
+    }
+
   private:
     std::unique_ptr<LocalizationNode> node_;
     rclcpp::Node::SharedPtr spy_;
@@ -505,6 +535,10 @@ class NodeHarness {
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr external_pub_;
+    rclcpp::Subscription<foray_localization_ros::msg::DynamicObstacleArray>::SharedPtr
+        obstacle_sub_;
+    std::size_t obstacle_count_{0};
+    std::int64_t last_obstacle_stamp_ns_{0};
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
     std::unique_ptr<tf2_ros::StaticTransformBroadcaster> static_broadcaster_;
