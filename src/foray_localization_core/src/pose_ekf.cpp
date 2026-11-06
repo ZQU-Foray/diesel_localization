@@ -55,8 +55,8 @@ void PoseEkf::reset(const Eigen::Isometry3d& estimate) {
     // 绝对真值（那会让后续量测全被忽略），也不给它一个 1 m 量级的不确定度
     // （那会让第一帧量测就整体推翻重定位结果）。
     covariance_ = Eigen::Matrix<double, kPoseDofCount, kPoseDofCount>::Zero();
-    const double translation_var = config_.measurement_noise_translation_m *
-                                   config_.measurement_noise_translation_m;
+    const double translation_var =
+        config_.measurement_noise_translation_m * config_.measurement_noise_translation_m;
     const double rotation_var =
         config_.measurement_noise_rotation_rad * config_.measurement_noise_rotation_rad;
     for (int i = 0; i < 3; ++i) {
@@ -74,8 +74,8 @@ const Eigen::Isometry3d& PoseEkf::predict(double dt_sec) {
     }
     // 常值预测：map -> odom 在两帧配准之间就靠里程计维持，估计值不动，
     // 只有不确定性随时间长大——这才是「下一次量测该被信多少」的依据。
-    const double translation_var = config_.process_noise_translation_m *
-                                   config_.process_noise_translation_m * dt_sec;
+    const double translation_var =
+        config_.process_noise_translation_m * config_.process_noise_translation_m * dt_sec;
     const double rotation_var =
         config_.process_noise_rotation_rad * config_.process_noise_rotation_rad * dt_sec;
     for (int i = 0; i < 3; ++i) {
@@ -110,8 +110,8 @@ const Eigen::Isometry3d& PoseEkf::update(const Eigen::Isometry3d& measurement,
     const Eigen::Matrix<double, kPoseDofCount, 1> residual =
         to_delta(measurement * estimate_.inverse());
 
-    const double translation_var = config_.measurement_noise_translation_m *
-                                   config_.measurement_noise_translation_m;
+    const double translation_var =
+        config_.measurement_noise_translation_m * config_.measurement_noise_translation_m;
     const double rotation_var =
         config_.measurement_noise_rotation_rad * config_.measurement_noise_rotation_rad;
     const double scale = config_.unobservable_noise_scale * config_.unobservable_noise_scale;

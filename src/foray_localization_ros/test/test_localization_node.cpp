@@ -74,15 +74,13 @@ TEST(LocalizationNodeTest, SlowAlignmentKeepsHealthOk) {
     // 先喂到 OK（health 要求连续 warmup_frames=3 帧合格配准）。
     bool became_ok = false;
     int cloud_tick = 0;
-    harness.drive(std::chrono::milliseconds(6000), std::chrono::milliseconds(5),
-                  [&](std::int64_t) {
-                      harness.publish_odom(0.0, 0.0);
-                      if (++cloud_tick % 20 == 0) {
-                          harness.publish_cloud(10);
-                      }
-                      became_ok = became_ok ||
-                                  harness.last_state().state == LocalizationState::STATE_OK;
-                  });
+    harness.drive(std::chrono::milliseconds(6000), std::chrono::milliseconds(5), [&](std::int64_t) {
+        harness.publish_odom(0.0, 0.0);
+        if (++cloud_tick % 20 == 0) {
+            harness.publish_cloud(10);
+        }
+        became_ok = became_ok || harness.last_state().state == LocalizationState::STATE_OK;
+    });
     // 预热阶段的计数也要打出来：父提交下本用例的失败点就在这几项上
     // （里程计没被处理、积压爆掉、状态节拍跑不动），不能只报一句「没进 OK」。
     const auto warmup_diagnostics = harness.diagnostics();
@@ -119,8 +117,7 @@ TEST(LocalizationNodeTest, SlowAlignmentKeepsHealthOk) {
                 "max_align_ms=%.1f\n",
                 harness.has_lost() ? 1 : 0, observed_state_hz,
                 1000.0 * diagnostics.max_odom_lag_sec,
-                static_cast<unsigned long long>(diagnostics.align_runs),
-                diagnostics.max_align_ms);
+                static_cast<unsigned long long>(diagnostics.align_runs), diagnostics.max_align_ms);
 
     EXPECT_FALSE(harness.has_lost()) << "配准慢不该把健康状态打成 LOST";
     EXPECT_FALSE(harness.has_reason("odometry stale"))
@@ -270,9 +267,8 @@ TEST(LocalizationNodeTest, OdometryChildFrameIsConvertedThroughTf) {
     harness.publish_static_transform("base_footprint", "livox_frame", 0.11, 0.0);
 
     // 静态外参是异步进 buffer 的：持续发里程计，直到真的有帧被接受。
-    harness.drive(1000ms, 10ms, [&harness](std::int64_t) {
-        harness.publish_odom(1.0, 0.0, "livox_frame");
-    });
+    harness.drive(1000ms, 10ms,
+                  [&harness](std::int64_t) { harness.publish_odom(1.0, 0.0, "livox_frame"); });
     ASSERT_TRUE(harness.wait_until(
         [&harness]() { return harness.diagnostics().odom_processed > 0; }, 3000ms))
         << "odom → livox_frame 的帧全部被丢弃：TF 没接上或子帧校验过严";
@@ -292,9 +288,8 @@ TEST(LocalizationNodeTest, OdometryWithoutChildFrameTfIsDropped) {
     TempMapDir map;
     NodeHarness harness(map_overrides(map), 5ms);
 
-    harness.drive(800ms, 10ms, [&harness](std::int64_t) {
-        harness.publish_odom(1.0, 0.0, "livox_frame");
-    });
+    harness.drive(800ms, 10ms,
+                  [&harness](std::int64_t) { harness.publish_odom(1.0, 0.0, "livox_frame"); });
 
     const auto diagnostics = harness.diagnostics();
     std::printf("L3 回执: odom_received=%llu odom_processed=%llu\n",

@@ -30,8 +30,7 @@ PointCloud make_plane(const Eigen::Vector3f& origin, const Eigen::Vector3f& u,
 }
 
 void merge(PointCloud& destination, const PointCloud& source) {
-    destination.points.insert(destination.points.end(), source.points.begin(),
-                              source.points.end());
+    destination.points.insert(destination.points.end(), source.points.begin(), source.points.end());
 }
 
 /// 单面墙：x = 0 平面，张在 y-z 上。法向只有 ±x。
@@ -79,8 +78,8 @@ TEST(Observability, SurroundingGeometryConstrainsAllDirections) {
     const NormalCache normals(box, 0.4, 6);
     const PointCloudIndex index(box, 0.5);
 
-    const ObservabilityReport report = analyze_observability(
-        box, Eigen::Isometry3d::Identity(), index, normals, 0.5, kThreshold);
+    const ObservabilityReport report =
+        analyze_observability(box, Eigen::Isometry3d::Identity(), index, normals, 0.5, kThreshold);
 
     // 没有任何一对点面约束时 inlier_count 会是 0，这里先确认真的用上了点云。
     EXPECT_GT(report.inlier_count, 1000U);
@@ -96,18 +95,18 @@ TEST(Observability, SingleWallRejectsTangentialTranslation) {
     const PointCloudIndex index(wall, 0.5);
     ASSERT_GT(normals.coverage(), 0.9);
 
-    const ObservabilityReport report = analyze_observability(
-        wall, Eigen::Isometry3d::Identity(), index, normals, 0.5, kThreshold);
+    const ObservabilityReport report =
+        analyze_observability(wall, Eigen::Isometry3d::Identity(), index, normals, 0.5, kThreshold);
 
     // 单面墙只约束法向：沿墙切向的平移必须被清除，否则走廊场景会把整帧配准当可信。
-    const auto tangential =
-        project_delta_to_observable(translation_delta(0.0, 0.5, 0.0), report);
+    const auto tangential = project_delta_to_observable(translation_delta(0.0, 0.5, 0.0), report);
     EXPECT_LT(tangential.norm(), 0.01);
     const auto vertical = project_delta_to_observable(translation_delta(0.0, 0.0, 0.5), report);
     EXPECT_LT(vertical.norm(), 0.01);
 
     // 法向平移必须保留——这是这面墙唯一能提供的约束。
-    const auto normal_direction = project_delta_to_observable(translation_delta(0.5, 0.0, 0.0), report);
+    const auto normal_direction =
+        project_delta_to_observable(translation_delta(0.5, 0.0, 0.0), report);
     EXPECT_NEAR(normal_direction(0), 0.5, 0.05);
 
     EXPECT_GT(report.unobservable_count, 0);
@@ -120,8 +119,8 @@ TEST(Observability, GroundOnlyRejectsPlanarTranslation) {
     const PointCloudIndex index(ground, 0.5);
     ASSERT_GT(normals.coverage(), 0.9);
 
-    const ObservabilityReport report = analyze_observability(
-        ground, Eigen::Isometry3d::Identity(), index, normals, 0.5, kThreshold);
+    const ObservabilityReport report = analyze_observability(ground, Eigen::Isometry3d::Identity(),
+                                                             index, normals, 0.5, kThreshold);
 
     // 只有地面时，平面内的两个平移与绕法向的偏航都拿不到约束。
     const auto planar = project_delta_to_observable(translation_delta(0.5, 0.5, 0.0), report);

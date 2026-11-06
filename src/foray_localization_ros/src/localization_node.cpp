@@ -21,7 +21,8 @@ namespace {
 /// 单调时钟差值（毫秒）。用 steady_clock 而不是节点时钟：这里量的是真实耗时，
 /// 仿真 /clock 会跳，量它没有意义。
 double elapsed_ms(const std::chrono::steady_clock::time_point& begin) {
-    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+        .count();
 }
 
 } // namespace
@@ -298,10 +299,9 @@ void LocalizationNode::mark_map_unavailable(const std::string& reason) {
     health_status_ = health_.enter_lost("map unavailable: " + reason, now().nanoseconds());
 }
 
-bool LocalizationNode::lookup_base_from(const std::string& child_frame,
-                                       const rclcpp::Time& time,
-                                       std::chrono::milliseconds timeout,
-                                       Eigen::Isometry3d* base_from_child) {
+bool LocalizationNode::lookup_base_from(const std::string& child_frame, const rclcpp::Time& time,
+                                        std::chrono::milliseconds timeout,
+                                        Eigen::Isometry3d* base_from_child) {
     try {
         const auto transform = tf_buffer_.lookupTransform(base_frame_, child_frame, time, timeout);
         const auto& stamped = transform.transform;
@@ -311,8 +311,8 @@ bool LocalizationNode::lookup_base_from(const std::string& child_frame,
         if (quaternion.norm() > 1e-9) {
             base_from_child->linear() = quaternion.normalized().toRotationMatrix();
         }
-        base_from_child->translation() = Eigen::Vector3d(
-            stamped.translation.x, stamped.translation.y, stamped.translation.z);
+        base_from_child->translation() =
+            Eigen::Vector3d(stamped.translation.x, stamped.translation.y, stamped.translation.z);
         return true;
     } catch (const tf2::TransformException& exception) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "TF %s->%s 失败: %s",
@@ -403,7 +403,7 @@ void LocalizationNode::on_odometry(const nav_msgs::msg::Odometry::ConstSharedPtr
         // 判成未来外插；雷达/base 的安装外参是刚体量，晚一个 TF 周期没有影响。
         // timeout 取 0：这条回调 5 ms 就来一帧，任何阻塞等待都会把队列堆起来（L1 的病）。
         if (!lookup_base_from(odometry->child_frame_id, rclcpp::Time(0, 0, RCL_ROS_TIME),
-                             std::chrono::milliseconds(0), &base_from_child)) {
+                              std::chrono::milliseconds(0), &base_from_child)) {
             return;
         }
         // T(odom←base) = T(odom←child) · T(child←base)，而 T(child←base) = T(base←child)⁻¹。
@@ -517,9 +517,10 @@ void LocalizationNode::maybe_flush_profile(std::int64_t now_ns) {
     }
     const double frames = static_cast<double>(profile_.samples);
     const double seconds = static_cast<double>(now_ns - profile_.window_start_ns) / 1e9;
-    RCLCPP_INFO(get_logger(), "耗时窗口: to_pcl=%.2fms voxel=%.2fms align=%.2fms 帧数=%.0f 配准率=%.1fHz",
-                profile_.to_pcl_ms / frames, profile_.voxel_ms / frames,
-                profile_.align_ms / frames, frames, frames / seconds);
+    RCLCPP_INFO(get_logger(),
+                "耗时窗口: to_pcl=%.2fms voxel=%.2fms align=%.2fms 帧数=%.0f 配准率=%.1fHz",
+                profile_.to_pcl_ms / frames, profile_.voxel_ms / frames, profile_.align_ms / frames,
+                frames, frames / seconds);
     profile_ = ProfileTotals{};
 }
 
@@ -639,8 +640,8 @@ void LocalizationNode::on_align_timer() {
             delta_vector.head<3>() = delta.translation();
             const Eigen::AngleAxisd delta_rotation(delta.linear());
             delta_vector.tail<3>() = delta_rotation.angle() * delta_rotation.axis();
-            const auto projected = foray::localization_map::project_delta_to_observable(
-                delta_vector, observability);
+            const auto projected =
+                foray::localization_map::project_delta_to_observable(delta_vector, observability);
             Eigen::Isometry3d correction = Eigen::Isometry3d::Identity();
             correction.translation() = projected.head<3>();
             const Eigen::Vector3d omega = projected.tail<3>();

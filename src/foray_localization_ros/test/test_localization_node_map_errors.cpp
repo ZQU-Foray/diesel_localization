@@ -25,16 +25,15 @@ using foray_localization_ros::msg::LocalizationState;
 /// 一份头部合法、但二进制段被截断的 PCD：`POINTS` 声明 1000 点，实际只有 3 个点。
 /// sha256 与 manifest 一致（文件被人为写成这样，不是传输损坏），所以校验挡不住它。
 std::string truncated_binary_pcd() {
-    std::string text =
-        "VERSION 0.7\n"
-        "FIELDS x y z\n"
-        "SIZE 4 4 4\n"
-        "TYPE F F F\n"
-        "COUNT 1 1 1\n"
-        "WIDTH 1000\n"
-        "HEIGHT 1\n"
-        "POINTS 1000\n"
-        "DATA binary\n";
+    std::string text = "VERSION 0.7\n"
+                       "FIELDS x y z\n"
+                       "SIZE 4 4 4\n"
+                       "TYPE F F F\n"
+                       "COUNT 1 1 1\n"
+                       "WIDTH 1000\n"
+                       "HEIGHT 1\n"
+                       "POINTS 1000\n"
+                       "DATA binary\n";
     for (int i = 0; i < 3; ++i) {
         const float xyz[3] = {static_cast<float>(i), 0.0F, 0.0F};
         text.append(reinterpret_cast<const char*>(xyz), sizeof(xyz));
@@ -64,8 +63,8 @@ void expect_map_unavailable(NodeHarness& harness, const std::string& fragment) {
     // 不给里程计时父提交也发不出 TF，用例就测不到闸门本身。
     harness.drive(milliseconds(1000), milliseconds(5),
                   [&harness](std::int64_t) { harness.publish_odom(0.0, 0.0); });
-    ASSERT_TRUE(harness.wait_until([&harness]() { return harness.state_count() >= 5; },
-                                   milliseconds(5000)))
+    ASSERT_TRUE(
+        harness.wait_until([&harness]() { return harness.state_count() >= 5; }, milliseconds(5000)))
         << "地图不可用时状态话题仍在按节拍发布（下游要靠它读到 LOST）";
     const StateRecord state = harness.last_state();
     EXPECT_EQ(state.state, LocalizationState::STATE_LOST) << "state=" << state.state;
@@ -106,8 +105,8 @@ TEST(LocalizationNodeMapErrors, OversizedPointCountSendsNoTransform) {
     expect_map_unavailable(harness, "上限");
 }
 
-}  // namespace
-}  // namespace foray::localization_ros::test_support
+} // namespace
+} // namespace foray::localization_ros::test_support
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

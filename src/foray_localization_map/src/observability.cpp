@@ -141,7 +141,8 @@ double NormalCache::coverage() const {
     return static_cast<double>(count) / static_cast<double>(valid_.size());
 }
 
-ObservabilityReport analyze_observability(const PointCloud& source, const Eigen::Isometry3d& transform,
+ObservabilityReport analyze_observability(const PointCloud& source,
+                                          const Eigen::Isometry3d& transform,
                                           const PointCloudIndex& index, const NormalCache& normals,
                                           double max_correspondence_distance_m,
                                           double eigenvalue_ratio_threshold,

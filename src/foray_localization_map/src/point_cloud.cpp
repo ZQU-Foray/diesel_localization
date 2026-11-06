@@ -107,9 +107,8 @@ PointCloud crop_by_fov(const PointCloud& cloud, double horizontal_deg, double ve
         if (!point.allFinite()) {
             continue;
         }
-        const double planar_range =
-            std::sqrt(static_cast<double>(point.x()) * point.x() +
-                      static_cast<double>(point.y()) * point.y());
+        const double planar_range = std::sqrt(static_cast<double>(point.x()) * point.x() +
+                                              static_cast<double>(point.y()) * point.y());
         // 竖直方向（±z 轴附近）的点水平方位无定义，只按垂直张角判定。
         if (planar_range > 1e-6) {
             double yaw = std::atan2(static_cast<double>(point.y()), static_cast<double>(point.x()));

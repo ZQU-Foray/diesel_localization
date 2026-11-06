@@ -68,9 +68,9 @@ TEST(PointCloudTest, CropByFovKeepsEverythingWhenFullFieldOfView) {
 
 TEST(PointCloudTest, CropByFovRemovesPointsOutsideHorizontalOpening) {
     PointCloud cloud;
-    cloud.points.emplace_back(1.0F, 0.0F, 0.0F);   // 方位 0 度，正对中心
-    cloud.points.emplace_back(0.0F, 1.0F, 0.0F);   // 方位 90 度
-    cloud.points.emplace_back(-1.0F, 0.0F, 0.0F);  // 方位 180 度（正后方）
+    cloud.points.emplace_back(1.0F, 0.0F, 0.0F);  // 方位 0 度，正对中心
+    cloud.points.emplace_back(0.0F, 1.0F, 0.0F);  // 方位 90 度
+    cloud.points.emplace_back(-1.0F, 0.0F, 0.0F); // 方位 180 度（正后方）
 
     // 120 度开口 = 偏离中心 ±60 度：只有方位 0 度那个点留下。
     const PointCloud kept = crop_by_fov(cloud, 120.0, 180.0, 0.0);
@@ -80,8 +80,8 @@ TEST(PointCloudTest, CropByFovRemovesPointsOutsideHorizontalOpening) {
 
 TEST(PointCloudTest, CropByFovRotatesWithCenterYaw) {
     PointCloud cloud;
-    cloud.points.emplace_back(1.0F, 0.0F, 0.0F);   // 方位 0 度
-    cloud.points.emplace_back(0.0F, 1.0F, 0.0F);   // 方位 90 度
+    cloud.points.emplace_back(1.0F, 0.0F, 0.0F); // 方位 0 度
+    cloud.points.emplace_back(0.0F, 1.0F, 0.0F); // 方位 90 度
 
     // 中心转到 90 度、只看 60 度开口：只剩正 y 方向那个点。
     const PointCloud kept = crop_by_fov(cloud, 60.0, 180.0, 90.0);
@@ -92,7 +92,7 @@ TEST(PointCloudTest, CropByFovRotatesWithCenterYaw) {
 TEST(PointCloudTest, CropByFovAppliesVerticalOpening) {
     PointCloud cloud;
     cloud.points.emplace_back(1.0F, 0.0F, 0.0F);
-    cloud.points.emplace_back(0.0F, 0.0F, 1.0F);  // 正上方，俯仰 90 度
+    cloud.points.emplace_back(0.0F, 0.0F, 1.0F); // 正上方，俯仰 90 度
 
     const PointCloud kept = crop_by_fov(cloud, 360.0, 40.0, 0.0);
     ASSERT_EQ(kept.size(), 1U);

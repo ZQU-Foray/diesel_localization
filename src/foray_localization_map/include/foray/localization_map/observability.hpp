@@ -117,7 +117,8 @@ inline constexpr double kInfiniteConditionNumber = 1e12;
 /// 转」和「绕里程计原点转」，等价的平移量可以差几十米，掩码也会随之翻转。传
 /// `nullptr` 表示绕 `transform.translation()`（本体）转；下游要修正的是 `map→odom`
 /// 这种外部位姿时，必须显式传它的原点（审计 L15）。
-ObservabilityReport analyze_observability(const PointCloud& source, const Eigen::Isometry3d& transform,
+ObservabilityReport analyze_observability(const PointCloud& source,
+                                          const Eigen::Isometry3d& transform,
                                           const PointCloudIndex& index, const NormalCache& normals,
                                           double max_correspondence_distance_m,
                                           double eigenvalue_ratio_threshold,
