@@ -34,6 +34,10 @@ class PclGicpAligner final : public Aligner {
 
     const AlignOptions& options() const { return options_; }
 
+    /// 替换配准参数。下一次 `align()` 生效——参数在每次配准时下发，
+    /// 不依赖「构造时配置一次」的隐式假设（审计 L14）。
+    void set_options(const AlignOptions& options);
+
   private:
     struct Impl;
 

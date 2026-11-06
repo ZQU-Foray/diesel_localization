@@ -19,6 +19,8 @@ namespace foray::localization_map {
 struct PriorMapLoadResult {
     bool ok{false};
     std::string error;
+    /// 3D 地图里被跳过的行数（见 `PcdLoadResult::skipped_lines`）。非 0 时调用方必须告警。
+    std::size_t skipped_pcd_lines{0};
 };
 
 /// 已加载并校验的先验地图。字段可直接被配准器与地图服务使用。

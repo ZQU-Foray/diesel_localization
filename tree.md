@@ -47,7 +47,8 @@
 │       ├── check_contracts.py     契约快照：接口变更必须同步 contracts.sha256
 │       ├── check_params.py        README 参数表 ↔ declare_parameter ↔ 兵种配置三方一致
 │       ├── check_tree_doc.py      本文件与实际跟踪文件双向一致
-│       └── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
+│       ├── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
+│       └── test_ros_results.py    把 colcon 的 gtest 结果汇总成覆盖清单（pytest 收集）
 │
 ├── docs/
 │   └── probe-style.md             门禁风格探针（test_guards 注入缺陷用，无需求语义）
@@ -137,8 +138,11 @@
 │   │   │   ├── map_server_node.cpp
 │   │   │   └── map_server_node_main.cpp    map_server_node 可执行入口
 │   │   └── test/
+│   │       ├── localization_node_test_support.hpp  节点级测试夹具（临时地图/注入后端/话题驱动）
 │   │       ├── test_adapters.cpp
-│   │       └── test_conversion.cpp
+│   │       ├── test_conversion.cpp
+│   │       ├── test_localization_node.cpp          在进程内构造主节点跑状态/配准/诊断
+│   │       └── test_localization_node_map_errors.cpp  地图不可用时一帧 TF 都不发
 │   │
 │   ├── foray_localization_relocalization/  可选 ONNX Runtime CPU 重定位（默认 OFF）
 │   │   ├── CMakeLists.txt

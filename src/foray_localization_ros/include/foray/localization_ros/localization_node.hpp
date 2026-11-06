@@ -21,6 +21,7 @@
 
 #include <Eigen/Geometry>
 
+#include <builtin_interfaces/msg/time.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -29,7 +30,9 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -39,7 +42,31 @@ namespace foray::localization_ros {
 
 class LocalizationNode : public rclcpp::Node {
   public:
-    explicit LocalizationNode(const rclcpp::NodeOptions& options);
+    /// `aligner` 非空时替代工厂构造的后端（decision.md D21 的可替换点）。该参数只服务于
+    /// 离线回放与节点级测试：生产入口 `localization_node_main.cpp` 不传它，走编译期开关。
+    explicit LocalizationNode(const rclcpp::NodeOptions& options,
+                              std::unique_ptr<foray::localization_map::Aligner> aligner = nullptr);
+
+    /// 运行期计数快照（decision.md D29）。只服务于测试与现场排障，不参与任何控制逻辑。
+    /// 读的时候持锁，所以拿到的是同一时刻的一致快照。
+    struct Diagnostics {
+        /// 里程计回调进入次数（含随后被校验丢弃的帧）。
+        std::uint64_t odom_received{0};
+        /// 完成状态更新的里程计帧数；与上一项之差即被丢弃的帧数。
+        std::uint64_t odom_processed{0};
+        /// 处理里程计帧时 `now - header.stamp` 的峰值（秒）。两者都是节点时钟，可直接相减。
+        double max_odom_lag_sec{0.0};
+        /// 实际发生的配准次数，无论后端是真配准还是注入的桩。
+        std::uint64_t align_runs{0};
+        /// 单次配准耗时峰值（毫秒，steady_clock）。
+        double max_align_ms{0.0};
+        /// 成功广播 `map -> odom` 的次数。
+        std::uint64_t tf_published{0};
+        /// 先验地图里被跳过的 ascii 行数（字段数不足或 x/y/z 非有限）。非 0 时装载期已告警，
+        /// 这里再暴露一个可断言的出口：审计 L18 要证明「丢点」不再只是日志里的一句话。
+        std::size_t skipped_pcd_lines{0};
+    };
+    Diagnostics diagnostics();
 
   private:
     void on_cloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud);
@@ -55,7 +82,6 @@ class LocalizationNode : public rclcpp::Node {
 
     void load_map();
     void publish_state();
-    void update_health(const foray::localization_map::AlignResult& result, std::int64_t stamp_ns);
     void publish_tf();
 
     // 参数
@@ -90,6 +116,19 @@ class LocalizationNode : public rclcpp::Node {
     ProfileTotals profile_;
 
     void maybe_flush_profile(std::int64_t now_ns);
+    /// 把「地图不可用」写成一条显式事实：记下原因并把健康状态压进 `LOST`。
+    /// 只被 `load_map()` 的失败分支调用（decision.md D36）。
+    void mark_map_unavailable(const std::string& reason);
+    /// 查 `base_frame_ → child_frame` 的外参（decision.md D37）。点云与里程计共用这一套：
+    /// 拿不到就返回 false，调用方负责丢帧——绝不返回单位阵把「不知道」装成「一致」。
+    /// @param time 查询时刻；传 `rclcpp::Time(0)` 表示「取最新可用」。
+    /// @param timeout 等待上限：点云用 100 ms 容忍 TF 晚到；里程计 200 Hz，用 0（不阻塞）。
+    bool lookup_base_from(const std::string& child_frame, const rclcpp::Time& time,
+                          std::chrono::milliseconds timeout, Eigen::Isometry3d* base_from_child);
+    /// 雷达位姿是否还新鲜（`lidar_timeout_sec` 内收到过点云）。调用方须持有 `mutex_`。
+    bool lidar_available_locked(std::int64_t now_ns) const;
+    /// 外部位姿是否还新鲜（`odom_timeout_sec` 内收到过一帧）。调用方须持有 `mutex_`。
+    bool external_available_locked(std::int64_t now_ns) const;
 
     rclcpp::Publisher<foray_localization_ros::msg::LocalizationState>::SharedPtr state_pub_;
     rclcpp::Publisher<foray_localization_ros::msg::MapMeta>::SharedPtr map_meta_pub_;
@@ -99,6 +138,17 @@ class LocalizationNode : public rclcpp::Node {
     rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
         external_pose_sub_;
     rclcpp::Service<foray_localization_ros::srv::Relocalize>::SharedPtr relocalize_srv_;
+
+    /// 回调组按「谁阻塞谁」划分（decision.md D30）：配准与聚类的耗时可到百毫秒级，
+    /// 它们必须和里程计、发布这类毫秒级、对时序敏感的回调分在不同组里，
+    /// 否则 executor 再多线程也只能排队跑，里程计会被配准饿死。
+    /// 组间并行只解决「互不阻塞」，共享状态仍由 `mutex_` 唯一仲裁。
+    rclcpp::CallbackGroup::SharedPtr odom_group_;
+    rclcpp::CallbackGroup::SharedPtr cloud_group_;
+    rclcpp::CallbackGroup::SharedPtr align_group_;
+    rclcpp::CallbackGroup::SharedPtr obstacle_group_;
+    rclcpp::CallbackGroup::SharedPtr publish_group_;
+    rclcpp::CallbackGroup::SharedPtr service_group_;
 
     rclcpp::TimerBase::SharedPtr state_timer_;
     rclcpp::TimerBase::SharedPtr tf_timer_;
@@ -111,6 +161,9 @@ class LocalizationNode : public rclcpp::Node {
 
     foray::localization_map::PriorMap map_;
     bool has_map_{false};
+    /// 地图不可用的原因（空 = 地图正常）。非空时健康状态被锁在 `LOST`，
+    /// `map → odom` 一帧都不发：没有地图就没有配准，任何位姿都是无源的（decision.md D36）。
+    std::string map_error_;
     /// 目标侧近邻索引与法向缓存，随地图生命周期只建一次（decision.md D25）。
     /// 两者都持有 `map_.cloud` 的引用，必须在 `map_` 之后声明、在 relocad 时整体重建。
     std::shared_ptr<foray::localization_map::PointCloudIndex> map_index_;
@@ -131,15 +184,39 @@ class LocalizationNode : public rclcpp::Node {
     /// 最近一帧点云的节点接收时刻（ns）。用于判定激光断流，避免依赖消息时间戳。
     std::int64_t last_cloud_rx_ns_{0};
     bool has_cloud_{false};
+    /// 最近一次被配准消费的点云时间戳（ns）。TF `map → odom` 用它打戳（audit L6）：
+    /// 位姿是配准在那一刻算出来的，标成 `now()` 等于把最多 200 ms 前的解当成当前解。
+    std::int64_t last_align_stamp_ns_{0};
     Eigen::Isometry3d odom_to_base_{Eigen::Isometry3d::Identity()};
     std::int64_t last_odom_ns_{0};
     bool has_odom_{false};
     Eigen::Isometry3d map_to_base_{Eigen::Isometry3d::Identity()};
     Eigen::Isometry3d map_to_odom_{Eigen::Isometry3d::Identity()};
     std::int64_t last_valid_ns_{0};
+    /// 最近一次被接受的外部位姿时间戳（decision.md D38）：位姿源仲裁要用它判新鲜度，
+    /// 父提交没有任何「外部位姿还在不在」的状态，于是接管之后永远翻不回来。
+    std::int64_t last_external_ns_{0};
     foray::localization::HealthStatus health_status_;
+    /// 最近一次配准的样本与逐方向可观性（decision.md D43）。状态消息要把「这个位姿有多准」
+    /// 和位姿一起发出去，而这两样东西原本只是 `on_align_timer()` 的局部变量，配准结束即丢弃。
+    foray::localization::RegistrationSample last_sample_;
+    std::array<bool, foray::localization_map::kDofCount> observable_{true, true, true,
+                                                                     true, true, true};
+    /// `filter_unobservable_noise_scale` 的原值。不可观方向的方差倍数与融合层共用同一个旋钮。
+    double unobservable_noise_scale_{1.0};
     std::atomic<bool> relocalize_pending_{false};
     Eigen::Isometry3d pending_map_to_base_{Eigen::Isometry3d::Identity()};
+
+    /// Diagnostics 的计数成员。`odom_received_` 用原子量：它要在持有 `mutex_` 之前累加，
+    /// 否则「进入次数」就等价于「处理次数」，区分不出排队与丢弃。其余计数都在 `mutex_` 内更新。
+    std::atomic<std::uint64_t> odom_received_{0};
+    std::uint64_t odom_processed_{0};
+    double max_odom_lag_sec_{0.0};
+    std::uint64_t align_runs_{0};
+    double max_align_ms_{0.0};
+    std::uint64_t tf_published_{0};
+    /// 先验地图里被跳过的行数（只在 `load_map()` 写一次，`mutex_` 内）。
+    std::size_t skipped_pcd_lines_{0};
 };
 
 } // namespace foray::localization_ros

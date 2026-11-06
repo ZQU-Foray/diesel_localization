@@ -79,14 +79,17 @@ MID360 点云 ──► point_lio（仅里程计）──► T_odom_lidar
   裁切，也包括为省算力主动做的 ROI / FOV 裁切。配准是否可信不能用单一阈值概括：
   `foray_localization_map` 在配准收敛位姿上建立**点面残差信息矩阵**（6×6），特征分解得到各
   自由度的可观性，把不可观方向显式上报，并**只在可观方向上**接受配准修正（`decision.md` D23）；
-  不可观方向的位姿由里程计外推承担，不被退化解拉走。
+  不可观方向的位姿由里程计外推承担，不被退化解拉走。可观性说的「绕原点转」必须是被修正的那个
+  位姿的原点（滤波启用时是 `map → odom`），不是本体位置——两者相差机器人离里程计原点的距离
+  （`decision.md` D49）。
 - **健康**：状态机 `INITIALIZING → OK ⇄ DEGRADED → LOST`，失效显式上报，**禁止静默外推**。
   退化（输入点数不足、可观性不足）是显式降级理由，不是沉默接受的理由。
 - **重定位**：启动时 `map → odom` 取单位阵（出生点即 `map` 原点，`odom` 与 `map` 重合）；
   丢失后调用 `/localization/relocalize`（`MODE_GEOMETRIC` + `map → base_frame` 初值）注入，
   状态机回到 `INITIALIZING` 直到收敛。自动全局重定位（ONNX Scan Context）为可选 P2，默认关闭。
 - **动态物体**：配准残差聚类，输出质心/尺寸/点数/置信度，**无类别标号**；
-  与「地图过期」通过持续时间、允许动态区域标注区分。
+  与「地图过期」通过持续时间、允许动态区域标注区分。聚类判「这帧点云还新鲜吗」用的是节点
+  时钟上的收到时刻，与点云 header 的传感器时间戳无关（两者是不同时钟域，`decision.md` D51）。
 
 ## 目录布局
 
@@ -116,6 +119,15 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | 输入 | `/aft_mapped_to_init` | `nav_msgs/Odometry` | sensor_data / 100–200 Hz |
 | 输入 | `/livox/lidar` | `sensor_msgs/PointCloud2` | sensor_data / 10 Hz |
 | 输入 | `/localization/external_pose` | `geometry_msgs/PoseWithCovarianceStamped` | 步兵/重装外部位姿，50 Hz |
+
+`/aft_mapped_to_init` 的 `pose` 是 `odom → child_frame_id`：`child_frame_id` 等于
+`base_frame` 时直接使用，否则按 TF 把安装外参换算进来（`decision.md` D37）；查不到 TF
+就丢这一帧，不会拿单位阵冒充。
+
+`/localization/external_pose` 是 `map → base_frame` 的量测，与配准结果同类：`pose_source`
+为 `external` 时无条件采用；为 `auto` 时**只在雷达位姿断流超过 `lidar_timeout_sec` 期间**采用，
+雷达恢复后位姿源自动翻回雷达（`decision.md` D38）。外部位姿没有可测的配准质量，
+所以它不参与残差/内点率判据，健康状态只判它是否新鲜。
 | 输出 | `/localization/state` | `foray_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
 | 输出 | `/localization/map_meta` | `foray_localization_ros/MapMeta` | transient_local / 1 Hz |
 | 输出 | `/localization/dynamic_obstacles` | `foray_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
@@ -176,7 +188,7 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `profile_enabled` | `false` | 分段耗时统计开关：每 5 s 打印一行 `to_pcl / voxel / align` 平均耗时与配准率。默认关，关闭时只有一次判空开销（`decision.md` D25） |
 | `filter_enabled` | `false` | 融合层 6 维 EKF 开关。`false` 时位姿更新与未引入滤波时逐字节一致（见 `decision.md` D24） |
 | `filter_measurement_noise_m` | `0.05` | EKF 平移量测噪声标准差（m）。默认取 0.25 m 体素先验图静止配准误差的实测值（D22/D26） |
-| `filter_unobservable_noise_scale` | `10.0` | EKF 对不可观方向的量测噪声倍数（标准差倍数）。取 10 表示该方向仅约 1 % 权重 |
+| `filter_unobservable_noise_scale` | `10.0` | EKF 对不可观方向的量测噪声倍数（标准差倍数），决定该方向权重有多小；权重本身另有 1 % 硬上限，不随外推时间回升（`decision.md` D46） |
 | `min_cluster_size` | `5` | 有效残差簇的最小点数 |
 | `max_cluster_size` | `500` | 有效残差簇的最大点数（更大视为地图差异） |
 | `state_rate_hz` | `50.0` | `LocalizationState` 发布频率（Hz） |
@@ -225,6 +237,14 @@ source: "RMUL 2027 field survey"
 坐标系约定：`map` 原点为**场地中心**，`+X` 红方 → 蓝方，`+Y` 红方左侧，`+Z` 向上。
 2D 栅格的 `origin` 是左下角像素在 `map` 系的位置，`resolution` 单位为 m/px。
 
+加载器把 PCD 头当不可信输入：点数上限 2×10⁷、数据上限 512 MiB、单字段 ≤ 32 字节，
+头部畸形或声明与实际不符一律加载失败并进入「地图不可用」——**宁可启动失败，也不静默
+接受半张地图**（`decision.md` D41）。
+
+ascii 段里字段数不足的行、以及 x/y/z 为 NaN/inf 的点会被跳过（这类行本来就不是有效点）：
+装载仍然成功，但跳过行数会记进 `PcdLoadResult::skipped_lines` 并在装载时 **WARN 出来**
+（`decision.md` D54）。「地图比声明少几个点」不能是没人知道的事实。
+
 ## 健康契约
 
 | 状态 | 条件（持续去抖） | `pose_valid` | 下游行为 |
@@ -234,6 +254,21 @@ source: "RMUL 2027 field survey"
 | `DEGRADED` | 残差或内点率越界，但仍在 `degraded_*` 内；≤ 200 ms 公告 | `true` | 降级消费，规划减速 |
 | `LOST` | 连续 `lost_timeout_sec` 无有效配准，或 odom 断流 > `odom_timeout_sec`、点云断流 > `lidar_timeout_sec` | `false` | 停止消费，显式失效 |
 
+`LOST` 的 `reason` 区分三种成因：`no odometry received`（从未收到里程计）、
+`odometry stale: <age>s (no samples)`（真的没有新帧）、
+`odometry stale: <age>s (processing backlog <lag>s)`（帧在队列里积压，即本节点处理不及）。
+
+`DEGRADED`/`OK` 的残差与内点率判据只适用于带配准质量的位姿源；外部位姿没有可测质量，
+在有外部位姿的配置里健康状态只判新鲜度，`confidence` 按状态给 0.5/1.0（`decision.md` D38）。
+
+地图不可用是 `LOST` 的另一条成因：`map_manifest` 未设置、sha256 校验失败、点数超限或
+加载异常，都会把状态锁进 `LOST`，reason 以 `map unavailable:` 开头。此时 `map → odom`
+**一帧都不发**（`decision.md` D36）。
+
+算法路径（配准、残差聚类、可观测性）与里程计、点云、发布路径必须分属不同回调组并跑在
+多线程执行器上：5 Hz 配准单帧可达上百毫秒，任何让里程计回调排队的实现都会把积压误报成
+`odometry stale`（`decision.md` D30、D50）。
+
 `LocalizationState` 的字段：`header`（`stamp` 为状态快照时刻）、`pose`（`map → base_frame`）、
 **`pose_valid`**、`confidence`、`age_sec`（距上次有效配准）、`state`、`source`、`reason`。
 
@@ -241,6 +276,15 @@ source: "RMUL 2027 field survey"
 用于闭环控制、路径规划或决策——`INITIALIZING`/`LOST` 时该字段仍会带着未经校正或已停更的
 合成位姿，只为 rosbag 复盘与诊断保留。TF `map → odom` 在 `LOST` 下停发，下游若绕过
 `pose_valid` 直接查 TF 会拿到过期结果。**失效标志不可被下游静默忽略。**
+
+**协方差契约（强制）**：`pose.covariance` 是 6×6 行主序（`x, y, z, rotX, rotY, rotZ`），
+只填对角——配准残差没有给出方向间的相关性。对角按最近一帧的残差与内点率给：位置方向
+σ = `max(残差, 1 cm) / sqrt(内点率)`，姿态方向 σ = 位置 σ / 1 m 杠杆；该帧不可观的自由度
+再按 `filter_unobservable_noise_scale` 的平方放大。**没有任何配准质量时（从未配准、
+`INITIALIZING`/`LOST`、外部位姿源）对角写 1e3，绝不写 0**——0 方差在
+`PoseWithCovariance` 里等于「无限权重」，会把未知量伪装成绝对真值（`decision.md` D43）。
+按协方差加权的下游可以据此降权，但**不得**把它当成「位姿一定可用」的判据——那是
+`pose_valid` 的职责。
 
 ## 依赖
 

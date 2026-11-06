@@ -134,6 +134,71 @@ TEST(Observability, GroundOnlyRejectsPlanarTranslation) {
     EXPECT_GT(report.unobservable_count, 0);
 }
 
+TEST(Observability, RotationLeverFollowsTheCorrectedFrame) {
+    // 审计 L15：EKF 修正的量是 `map → odom`，它的旋转自由度是「绕里程计原点转」，
+    // 而配准给的位姿是 `map → base`。两者相差 |odom → base|——机器人沿场地跑出 40 m
+    // 后，同一个旋转在残差上等价于 40 m 的平移。父提交把力臂固定成本体位置，于是
+    // 40 m 的杠杆把旋转信息放大到 10^6 量级，归一化后连「墙的法向平移」都掉到阈值下，
+    // 掩码判它不可观，下游就把这个方向的修正清零——明明是最可信的方向。
+    PointCloud scene = make_wall();
+    merge(scene, make_ground());
+    const NormalCache normals(scene, 0.3, 6);
+    const PointCloudIndex index(scene, 0.5);
+
+    Eigen::Isometry3d map_to_base = Eigen::Isometry3d::Identity();
+    map_to_base.translation().x() = 40.0;
+    PointCloud source;
+    source.points.reserve(scene.points.size());
+    for (const auto& point : scene.points) {
+        source.points.push_back((map_to_base.inverse() * point.cast<double>()).cast<float>());
+    }
+
+    // 里程计原点落在地图原点上：力臂相差 40 m。
+    const Eigen::Vector3d odom_origin = Eigen::Vector3d::Zero();
+    const ObservabilityReport corrected =
+        analyze_observability(source, map_to_base, index, normals, 0.5, kThreshold, &odom_origin);
+    const ObservabilityReport body_relative =
+        analyze_observability(source, map_to_base, index, normals, 0.5, kThreshold);
+
+    int flipped = 0;
+    for (std::size_t dof = 0; dof < kDofCount; ++dof) {
+        if (corrected.observable[dof] != body_relative.observable[dof]) {
+            ++flipped;
+        }
+    }
+    printf("L15 回执(力臂语义): odom-力臂 unobs=%d cond=%.3g；body-力臂 unobs=%d cond=%.3g；"
+           "判断翻转 %d/6\n",
+           corrected.unobservable_count, corrected.condition_number,
+           body_relative.unobservable_count, body_relative.condition_number, flipped);
+
+    // 40 m 杠杆把旋转信息放大到 10^6 量级，归一化后 4 个方向跌到阈值以下。
+    EXPECT_EQ(corrected.unobservable_count, 1);
+    EXPECT_EQ(body_relative.unobservable_count, 5);
+    EXPECT_EQ(flipped, 4);
+    EXPECT_LT(corrected.condition_number, 1e3) << "绕里程计原点算力臂时条件数应与场景本身相当";
+    EXPECT_GT(body_relative.condition_number, 1e6) << "绕本体算力臂时 40 m 杠杆主导了条件数";
+}
+
+TEST(Observability, RotationLeverDefaultsToTheBodyPose) {
+    // 不传 lever_origin 时行为必须与父提交一致：力臂取 `transform.translation()`。
+    // 里程计原点与本体重合（启动那一刻就是如此）时两种算法逐位相同，这条守住默认值。
+    const PointCloud scene = make_box();
+    const NormalCache normals(scene, 0.4, 6);
+    const PointCloudIndex index(scene, 0.5);
+
+    Eigen::Isometry3d transform = Eigen::Isometry3d::Identity();
+    transform.translation() = Eigen::Vector3d(1.0, -2.0, 0.5);
+    const Eigen::Vector3d body_origin = transform.translation();
+
+    const ObservabilityReport defaulted =
+        analyze_observability(scene, transform, index, normals, 0.5, kThreshold);
+    const ObservabilityReport explicit_body =
+        analyze_observability(scene, transform, index, normals, 0.5, kThreshold, &body_origin);
+
+    EXPECT_EQ(defaulted.information, explicit_body.information);
+    EXPECT_EQ(defaulted.observable, explicit_body.observable);
+}
+
 TEST(Observability, DisjointCloudsReportNothingObservable) {
     const PointCloud wall = make_wall();
     const NormalCache normals(wall, 0.3, 6);

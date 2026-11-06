@@ -8,6 +8,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdio>
+#include <limits>
 
 namespace foray::localization {
 namespace {
@@ -82,6 +84,125 @@ TEST(PoseEkf, UnobservableDirectionTrustedLess) {
     EXPECT_GT(trusted.estimate().translation().x(), 0.2);
     EXPECT_LT(untrusted.estimate().translation().x(), 0.1);
     EXPECT_LT(untrusted.estimate().translation().x(), trusted.estimate().translation().x());
+}
+
+/// L12 用例一：不可观方向的权重必须始终是「约 1 %」，不能随外推时间爬回去。
+///
+/// 噪声倍数只决定增益有多小（P_ii / (P_ii + R·scale²)），决定不了它的上限：
+/// 中间没有配准、协方差按 0.05 m/s 一直长，分子追上分母后增益自己就大了。
+TEST(PoseEkf, UnobservableDirectionWeightStaysCapped) {
+    std::array<bool, kPoseDofCount> observable{};
+    observable.fill(true);
+    observable[0] = false;
+
+    PoseEkf ekf(enabled_config());
+    ekf.reset(Eigen::Isometry3d::Identity());
+    // 100 s 只外推不更新：协方差长到约 0.25 m²。
+    for (int index = 0; index < 500; ++index) {
+        ekf.predict(0.2);
+    }
+    const double covariance_x = ekf.covariance()(0, 0);
+    ekf.update(make_pose(1.0, 0.0, 0.0), &observable);
+    const double moved = ekf.estimate().translation().x();
+    std::printf("L12 回执(增益漂移): 外推 100s 后 cov[x]=%.4f 量测 1.0 m → 估计移动=%.4f "
+                "m（隐含增益 %.3f）\n",
+                covariance_x, moved, moved);
+    EXPECT_LT(moved, 0.02) << "不可观方向的增益被协方差增长推高了：1 m 的量测让病态方向动了 "
+                           << moved << " m";
+}
+
+/// L12 用例二：协方差不能无限增长——否则迟早溢出，且增益会贴着 1。
+TEST(PoseEkf, CovarianceStopsGrowing) {
+    PoseEkf ekf(enabled_config());
+    ekf.reset(Eigen::Isometry3d::Identity());
+    // 1e5 s（约 28 h）外推：无上限时平移方差会长到 250 m²。
+    for (int index = 0; index < 100000; ++index) {
+        ekf.predict(1.0);
+    }
+    const double translation = ekf.covariance()(0, 0);
+    const double rotation = ekf.covariance()(3, 3);
+    // 上限值写死在断言里而不是引用常量：本用例要能在父提交上编译并失败。
+    std::printf("L12 回执(方差上限): 外推 1e5 s 后 cov[x]=%.4f cov[rx]=%.4f（上限 1.00 / 0.25）\n",
+                translation, rotation);
+    EXPECT_LE(translation, 1.0);
+    EXPECT_LE(rotation, 0.25);
+    EXPECT_TRUE(std::isfinite(translation));
+}
+
+/// L13 用例一：非有限量测必须被丢掉，而不是把 NaN 写进状态。
+TEST(PoseEkf, NonFiniteMeasurementIsDropped) {
+    PoseEkf ekf(enabled_config());
+    ekf.reset(make_pose(0.3, 0.0, 0.0));
+    const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> before = ekf.covariance();
+
+    Eigen::Isometry3d broken = make_pose(1.0, 1.0, 0.5);
+    broken.translation().x() = std::numeric_limits<double>::quiet_NaN();
+    ekf.update(broken);
+
+    const Eigen::Isometry3d& estimate = ekf.estimate();
+    std::printf("L13 回执(非有限量测): 估计 x=%.4f 有限=%d 协方差有限=%d 协方差未变=%d\n",
+                estimate.translation().x(),
+                estimate.matrix().allFinite() && std::isfinite(estimate.translation().x()) ? 1 : 0,
+                ekf.covariance().allFinite() ? 1 : 0,
+                (ekf.covariance() - before).cwiseAbs().maxCoeff() < 1e-12 ? 1 : 0);
+    EXPECT_TRUE(estimate.matrix().allFinite());
+    EXPECT_NEAR(estimate.translation().x(), 0.3, 1e-12);
+    EXPECT_TRUE(ekf.covariance().allFinite());
+    EXPECT_LT((ekf.covariance() - before).cwiseAbs().maxCoeff(), 1e-12);
+}
+
+/// L13 用例二：`dt_sec <= 0` 挡不住 NaN，预测必须自己判有限性。
+TEST(PoseEkf, NonFinitePredictionIsDropped) {
+    PoseEkf ekf(enabled_config());
+    ekf.reset(Eigen::Isometry3d::Identity());
+    const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> before = ekf.covariance();
+
+    ekf.predict(std::numeric_limits<double>::quiet_NaN());
+
+    std::printf("L13 回执(NaN dt): 协方差有限=%d 协方差未变=%d\n",
+                ekf.covariance().allFinite() ? 1 : 0,
+                (ekf.covariance() - before).cwiseAbs().maxCoeff() < 1e-12 ? 1 : 0);
+    EXPECT_TRUE(ekf.covariance().allFinite());
+    EXPECT_LT((ekf.covariance() - before).cwiseAbs().maxCoeff(), 1e-12);
+}
+
+/// L13 用例三：非有限初值不能进状态（重定位注入坏值同样要挡住）。
+TEST(PoseEkf, NonFiniteResetIsIgnored) {
+    PoseEkf ekf(enabled_config());
+    ekf.reset(make_pose(0.25, 0.0, 0.0));
+
+    Eigen::Isometry3d broken = make_pose(9.0, 9.0, 0.0);
+    broken.translation().y() = std::numeric_limits<double>::infinity();
+    ekf.reset(broken);
+
+    std::printf("L13 回执(非有限 reset): 估计 x=%.4f y=%.4f\n", ekf.estimate().translation().x(),
+                ekf.estimate().translation().y());
+    EXPECT_NEAR(ekf.estimate().translation().x(), 0.25, 1e-12);
+    EXPECT_NEAR(ekf.estimate().translation().y(), 0.0, 1e-12);
+}
+
+/// L13 用例四：多轮预测/更新后协方差保持对称、对角为正（Joseph + 对称化的回归守卫）。
+TEST(PoseEkf, CovarianceStaysSymmetricAndPositive) {
+    PoseEkf ekf(enabled_config());
+    ekf.reset(Eigen::Isometry3d::Identity());
+    std::array<bool, kPoseDofCount> observable{};
+    observable.fill(true);
+    observable[5] = false;
+
+    for (int index = 0; index < 500; ++index) {
+        ekf.predict(0.2);
+        const double jitter = (index % 2 == 0) ? 0.02 : -0.02;
+        ekf.update(make_pose(0.1 + jitter, 0.05, 0.01 * jitter), &observable);
+    }
+    const Eigen::Matrix<double, kPoseDofCount, kPoseDofCount> covariance = ekf.covariance();
+    const double asymmetry = (covariance - covariance.transpose()).cwiseAbs().maxCoeff();
+    double min_diagonal = covariance(0, 0);
+    for (int i = 1; i < kPoseDofCount; ++i) {
+        min_diagonal = std::min(min_diagonal, covariance(i, i));
+    }
+    std::printf("L13 回执(对称性): 最大不对称=%.3e 最小对角=%.3e\n", asymmetry, min_diagonal);
+    EXPECT_LT(asymmetry, 1e-12);
+    EXPECT_GT(min_diagonal, 0.0);
 }
 
 TEST(PoseEkf, RotationResidualTakesShortWayAround) {

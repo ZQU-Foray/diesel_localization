@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
+#include <string>
 
 namespace foray::localization {
 namespace {
@@ -41,6 +43,23 @@ double clamp01(double value) {
     return std::clamp(value, 0.0, 1.0);
 }
 
+/// 里程计失效有三种完全不同的成因，必须能被现场区分开（decision.md D30）：
+/// 从来没收到过 / 收到过但现在长时间没新帧 / 帧在队列里积压着没人处理。
+/// 第三种是「本节点算得太慢」，把它写成 odometry timeout 会把排查方向直接带偏。
+std::string odom_failure_reason(double odom_age_sec, double odom_backlog_sec, double timeout_sec) {
+    if (!std::isfinite(odom_age_sec)) {
+        return "no odometry received";
+    }
+    char text[128];
+    if (odom_backlog_sec > 0.5 * timeout_sec) {
+        std::snprintf(text, sizeof(text), "odometry stale: %.3fs (processing backlog %.3fs)",
+                      odom_age_sec, odom_backlog_sec);
+    } else {
+        std::snprintf(text, sizeof(text), "odometry stale: %.3fs (no samples)", odom_age_sec);
+    }
+    return text;
+}
+
 } // namespace
 
 const char* to_string(HealthState state) {
@@ -71,6 +90,18 @@ const char* to_string(PoseSource source) {
 
 HealthMonitor::HealthMonitor(HealthConfig config) : config_(config) {}
 
+HealthStatus HealthMonitor::enter_lost(const std::string& reason, Timestamp now_ns) {
+    if (start_ns_ == 0) {
+        start_ns_ = now_ns;
+        state_since_ns_ = now_ns;
+    }
+    if (state_ != HealthState::kLost) {
+        transition(HealthState::kLost, reason, now_ns);
+    }
+    last_confidence_ = 0.0;
+    return snapshot(now_ns);
+}
+
 void HealthMonitor::reset() {
     state_ = HealthState::kInitializing;
     state_since_ns_ = 0;
@@ -95,6 +126,11 @@ double HealthMonitor::compute_confidence(const RegistrationSample& sample) const
         return 0.0;
     }
 
+    if (!sample.has_registration_quality) {
+        // 质量不可测：置信度只表达「这一拍有位姿」，DEGRADED 与其它路径一样打对折。
+        return state_ == HealthState::kDegraded ? 0.5 : 1.0;
+    }
+
     const double denominator = std::max(2.0 * config_.degraded_mean_residual_m, 1e-6);
     const double residual_term = 1.0 - clamp01(sample.mean_residual_m / denominator);
     double confidence = clamp01(sample.inlier_ratio) * residual_term;
@@ -115,7 +151,7 @@ HealthStatus HealthMonitor::snapshot(Timestamp now_ns) const {
 }
 
 HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp now_ns,
-                                   Timestamp last_odom_ns) {
+                                   Timestamp last_odom_ns, double odom_backlog_sec) {
     if (start_ns_ == 0) {
         start_ns_ = now_ns;
         state_since_ns_ = now_ns;
@@ -125,7 +161,9 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
     const double odom_age = age_seconds(now_ns, last_odom_ns);
     if (!std::isfinite(odom_age) || odom_age > config_.odom_timeout_sec) {
         if (state_ != HealthState::kLost) {
-            transition(HealthState::kLost, "odometry timeout", now_ns);
+            transition(HealthState::kLost,
+                       odom_failure_reason(odom_age, odom_backlog_sec, config_.odom_timeout_sec),
+                       now_ns);
         }
         last_confidence_ = 0.0;
         return snapshot(now_ns);
@@ -142,14 +180,20 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
         last_valid_ns_ = std::max(last_valid_ns_, sample.stamp_ns);
         // 点数与可观性是「残差/IPR 之外」的两条独立降级理由（decision.md D23）：
         // 残差小只说明对上的点贴得紧，不说明这些点在几何上约束住了 6 个自由度。
-        const bool points_ok = config_.min_source_points == 0 ||
+        // 不带配准质量的位姿源（外部位姿）：只剩「新鲜」这一条判据，质量判据一律不参与。
+        // 这不是放宽，而是承认「本样本没有可测的质量」——父提交的做法是把 inlier_ratio
+        // 硬写成 1.0，等于伪造一份满分质检报告（D38）。
+        const bool quality_known = sample.has_registration_quality;
+        const bool points_ok = !quality_known || config_.min_source_points == 0 ||
                                sample.source_points >= config_.min_source_points;
-        const bool observable_ok = sample.unobservable_count <= config_.max_unobservable_dofs;
-        const bool good = sample.mean_residual_m <= config_.ok_mean_residual_m &&
-                          sample.inlier_ratio >= config_.ok_inlier_ratio && points_ok &&
-                          observable_ok;
-        const bool degraded_ok = sample.mean_residual_m <= config_.degraded_mean_residual_m &&
-                                 sample.inlier_ratio >= config_.degraded_inlier_ratio;
+        const bool observable_ok =
+            !quality_known || sample.unobservable_count <= config_.max_unobservable_dofs;
+        const bool good = !quality_known || (sample.mean_residual_m <= config_.ok_mean_residual_m &&
+                                             sample.inlier_ratio >= config_.ok_inlier_ratio &&
+                                             points_ok && observable_ok);
+        const bool degraded_ok =
+            !quality_known || (sample.mean_residual_m <= config_.degraded_mean_residual_m &&
+                               sample.inlier_ratio >= config_.degraded_inlier_ratio);
 
         if (good) {
             ++good_frames_;
