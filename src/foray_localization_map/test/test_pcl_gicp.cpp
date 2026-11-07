@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 
 namespace {
 
@@ -65,6 +66,96 @@ TEST(PclGicpAlignerTest, RecoversKnownTransform) {
     EXPECT_LT(std::abs(angle), 0.02);
     EXPECT_GT(result.inlier_ratio, 0.9);
     EXPECT_GT(result.iterations, 0);
+}
+
+/// 非周期点云：格点在 3 m 平移下与自身重合（0.3 m 间距正好 10 格），
+/// 用它测「靶标换了」会得到「旧靶标也匹配」的假阴性。
+PointCloud make_random_cloud(int count, double extent) {
+    PointCloud cloud;
+    cloud.points.reserve(static_cast<std::size_t>(count));
+    unsigned seed = 20261031U;
+    auto next = [&seed, extent]() {
+        seed = seed * 1103515245U + 12345U;
+        return (static_cast<double>((seed >> 8U) % 100000U) / 100000.0 - 0.5) * extent;
+    };
+    for (int index = 0; index < count; ++index) {
+        cloud.points.emplace_back(static_cast<float>(next()), static_cast<float>(next()),
+                                  static_cast<float>(next()));
+    }
+    return cloud;
+}
+
+/// L14 用例一：target 缓存不能只看地址。
+///
+/// 同一个 `PointCloud` 对象被整体换内容（`map = load_pcd(...)` 不会换地址）时，
+/// 缓存命中会让 GICP 对着旧靶标优化、质量评估却用新靶标——读数就是
+/// 「converged=1 但 inlier=0」，位姿却是照旧地图算出来的。
+TEST(PclGicpAlignerTest, TargetCacheInvalidatesWhenContentChanges) {
+    PointCloud target = make_random_cloud(400, 1.0);
+    Eigen::Isometry3d truth = Eigen::Isometry3d::Identity();
+    truth.translation() = Eigen::Vector3d(0.05, -0.03, 0.01);
+
+    auto make_source = [](const PointCloud& cloud, const Eigen::Isometry3d& offset) {
+        PointCloud source;
+        source.points.reserve(cloud.points.size());
+        const Eigen::Isometry3d inverse = offset.inverse();
+        for (const auto& point : cloud.points) {
+            source.points.push_back((inverse * point.cast<double>()).cast<float>());
+        }
+        return source;
+    };
+
+    PclGicpAligner aligner(make_options());
+    const auto first =
+        aligner.align(make_source(target, truth), target, Eigen::Isometry3d::Identity());
+    ASSERT_TRUE(first.converged) << first.error;
+    ASSERT_GT(first.inlier_ratio, 0.9);
+
+    // 同一个对象、同一个地址，内容整体平移 3 m —— 相当于地图被重新加载。
+    constexpr double kShiftM = 3.0;
+    PointCloud replaced;
+    replaced.points.reserve(target.points.size());
+    for (const auto& point : target.points) {
+        replaced.points.push_back(point + Eigen::Vector3f(static_cast<float>(kShiftM), 0.0F, 0.0F));
+    }
+    target = replaced;
+
+    // 初值就是真值：这一帧唯一可能失败的原因只能是「靶标没换」。
+    const auto second = aligner.align(make_source(target, truth), target, truth);
+    std::printf(
+        "L14 回执(target 内容变更): converged=%d iterations=%d inlier=%.3f x=%.3f error='%s'\n",
+        second.converged ? 1 : 0, second.iterations, second.inlier_ratio,
+        second.transform.translation().x(), second.error.c_str());
+    ASSERT_TRUE(second.converged) << second.error;
+    EXPECT_GT(second.inlier_ratio, 0.9) << "配准对着旧靶标做了：质量评估却说没有内点";
+    // source 与 target 用的是同一份新内容，所以解就是它们之间的真值偏移（不是 3 m 本身）。
+    EXPECT_LT((second.transform.translation() - truth.translation()).norm(), 0.02);
+}
+
+/// L14 用例二：`set_options()` 之后必须在下一帧生效，而不是被「只配置一次」吞掉。
+TEST(PclGicpAlignerTest, OptionsTakeEffectAfterSetOptions) {
+    const PointCloud target = make_cube(5, 0.3);
+    Eigen::Isometry3d truth = Eigen::Isometry3d::Identity();
+    truth.linear() = Eigen::AngleAxisd(0.02, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+    PointCloud source;
+    for (const auto& point : target.points) {
+        source.points.push_back((truth.inverse() * point.cast<double>()).cast<float>());
+    }
+
+    AlignOptions stingy = make_options();
+    stingy.max_iterations = 1;
+    PclGicpAligner aligner(stingy);
+    const auto limited = aligner.align(source, target, Eigen::Isometry3d::Identity());
+    ASSERT_LE(limited.iterations, 1);
+
+    aligner.set_options(make_options());
+    const auto restored = aligner.align(source, target, Eigen::Isometry3d::Identity());
+    std::printf("L14 回执(参数下发): 改前 iterations=%d → set_options 后 iterations=%d\n",
+                limited.iterations, restored.iterations);
+    EXPECT_GT(restored.iterations, limited.iterations)
+        << "set_options() 没有在下一帧生效：迭代预算仍是旧值";
+    ASSERT_TRUE(restored.converged) << restored.error;
+    EXPECT_GT(restored.inlier_ratio, 0.9);
 }
 
 TEST(PclGicpAlignerTest, RejectsEmptyInput) {

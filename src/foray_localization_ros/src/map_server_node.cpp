@@ -22,10 +22,25 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
     if (manifest.empty()) {
         RCLCPP_ERROR(get_logger(), "map_manifest 未设置，地图服务不可用");
     } else {
-        const auto result = foray::localization_map::load_prior_map(manifest, &map_, verify);
-        if (!result.ok) {
-            RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", result.error.c_str());
+        bool loaded = false;
+        std::string load_error;
+        std::size_t skipped_pcd_lines = 0U;
+        try {
+            const auto result = foray::localization_map::load_prior_map(manifest, &map_, verify);
+            loaded = result.ok;
+            load_error = result.error;
+            skipped_pcd_lines = result.skipped_pcd_lines;
+        } catch (const std::exception& exception) {
+            load_error = exception.what();
+        }
+        if (!loaded) {
+            RCLCPP_ERROR(get_logger(), "加载先验地图失败: %s", load_error.c_str());
         } else {
+            if (skipped_pcd_lines > 0U) {
+                RCLCPP_WARN(get_logger(),
+                            "先验地图有 %zu 行被跳过（字段数不足或 x/y/z 非有限），请检查导出流程",
+                            skipped_pcd_lines);
+            }
             loaded_ = true;
             RCLCPP_INFO(get_logger(), "地图版本 %s，%zu 点，栅格 %dx%d",
                         map_.manifest.version.c_str(), map_.cloud.size(), map_.grid.width,

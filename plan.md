@@ -38,6 +38,137 @@
   `check_contracts` / `check_params` / `check_tree_doc`）、`contracts.sha256` 接口快照、
   CI 四个作业（`file-hygiene` / `doc-sync` / `param-contract` / `contract-lock`），
   `tree.md` 双向一致（见 `decision.md` D18）
+- [ ] **M9 小 FOV 可观测性定位 · EKF 融合 · 性能**（`decision.md` D23/D24/D25）——进行中
+  - [x] **i1 需求入档**：README「定位方案」补齐「位姿滤波」「可观测性与裁切」两节；
+    `decision.md` 新增 D23（可观测性与方向约束）、D24（融合层 EKF）、D25（性能与可选后端）
+  - [x] **i2 可观测性基础设施**：点面残差 6×6 信息矩阵、特征分解、不可观方向标签化、
+    target 法向与点云索引随地图生命周期缓存
+  - [x] **i3 FOV 裁切与方向约束**：`crop_by_fov`、修正量投影到可观子空间、健康契约增加
+    「输入点数不足」「可观性不足」两条显式降级判据
+  - [x] **i4 FOV 极限扫描实验**：静止条件下扫 360/180/120/90/60/45/30 度共九组，
+    全部 `100% OK`、误差 0.04–0.12 m（A2 判据 0.30 m）；方向约束只在 60° 及以下有收益
+    （0.118 → 0.066），120° 反而劣化。结论见 `decision.md` D26
+  - [ ] **i5 EKF 融合层**：常值预测、按可观性逐方向放大量测噪声、重定位硬切与重置、
+    `filter_enabled: false` 时与改造前逐字节等价的直通路径
+  - [x] **i6 性能零依赖优化**：逆矩阵缓存、`PointCloudIndex` 与 target 法向复用、
+    `setInputTarget` 跨帧复用可行性验证；逐项独立提交并给分段耗时表
+  - [x] **i7 可选 small_gicp 后端评估**：`FORAY_WITH_SMALL_GICP`（默认 OFF），
+    实测提速 < 15% 则不引入
+  - [ ] **i8 GUI 审查产物**：补 `odom → base_footprint` 后尝试 RViz；不可用则交付
+    monitor 四联图 + 自包含 HTML 报告
+- [x] **M10 审计整改 L1–L18**（`audit/tasks/02-foray_localization.md`，原则见 `decision.md` D28）
+  2026-11-03 全部 20 条落地：22 个提交在 `fix/audit-localization-02`（PR #7，base 为审计基线
+  `feat/fov-observability-ekf`），每条都留了「父提交红 / 修复后绿」回执；容器内
+  `FORAY_WITH_PCL=ON` 145 tests、`OFF` 138 tests 均 0 failures，四道门禁全绿。
+  - [x] **测试基建**：节点实现进库、可注入配准后端、`Diagnostics` 计数
+    （`decision.md` D29）
+  - [x] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
+    odom 超时拆成「没收到」与「处理不及」两种 reason（`decision.md` D30/D35；
+    回执：注入 200 ms 后端 6 s，父提交停在 `no valid registration`、积压 201.4 ms、
+    状态 27.5 Hz；现为 `LOST=0`、积压 11.8 ms、状态 50.0 Hz）
+  - [ ] **P1 L2/L3/L4/L5/L9/L10**：地图失败转 LOST 且 TF 只放行 `OK`/`DEGRADED`、
+    `child_frame_id` 校验与 TF 补转换、位姿源仲裁接线（`select_pose_source`）、
+    参数声明顺序、配准量测锁内快照、PCD 加载上限与异常安全
+    - [x] **L2 地图不可用即 LOST、TF 闸门收紧**（`decision.md` D36）：三种地图失败
+      （manifest 缺失 / sha256 不符 / PCD 截断）在 `test_localization_node_map_errors`
+      上都是 `state=LOST` + `pose_valid=false` + `tf_published=0`，订阅侧 TF 树也查不到
+      `map → odom`；父提交同用例 `state=INITIALIZING`、`tf_published=20`、TF 树查得到。
+    - [x] **L10 PCD 头校验与异常安全**（`decision.md` D41）：三条硬上限 + `from_chars`
+      不抛异常解析 + 二进制段先量剩余字节再分配 + ascii 实际行数校验 + 加载调用点
+      `try/catch`。`test_pcd_loader` 4→8 条，父提交四条全红；节点级
+      `OversizedPointCountSendsNoTransform` 覆盖「20 亿点地图 → 一帧 TF 都不发」。
+    - [x] **L9 配准量测时刻对齐**（`decision.md` D40）：锁内快照 `odom_to_base_at_cloud`，
+      量测换算不再读配准结束时的里程计。`MapToOdomJitterUnderConstantVelocity`（1 m/s、
+      200 ms 后端、8 s/20 次配准）`map → odom` 极差父提交 3.2110 m、本提交 0.0000 m。
+    - [x] **L5 参数声明顺序**（`decision.md` D39）：`min_source_points` /
+      `max_unobservable_dofs` 的 declare 移到 `HealthMonitor` 构造之前。集成用例
+      `MinSourcePointsParameterTakesEffect`：250 点进 `OK`、降到 30 点落
+      `DEGRADED / insufficient source points`；父提交同用例停在 `OK`（参数完全无效）。
+    - [x] **L4 位姿源仲裁接线**（`decision.md` D38）：`select_pose_source()` 每拍重算，
+      `auto` 只在雷达断流时接受外部位姿；外部位姿不再伪造 `inlier_ratio=1.0`（改由
+      `has_registration_quality=false` 走「只判新鲜度」路径）。三条集成用例在父提交上
+      全红（`source=2, x=5.000` / `state=DEGRADED` 未接管 / 恢复后仍 `source=2`），
+      现为 `source=1 x=0.000` / `source=2 x=5.000 state=OK` / `source=1`。
+    - [x] **L3 里程计子帧与外参换算**（`decision.md` D37）：`Odometry.pose` 按
+      `odom → child_frame_id` 解释，`child != base` 时用 TF 补 `T(base←child)` 并取逆乘进去。
+      `test_localization_node` 两条用例：0.11 m 外参 → state x=0.890（父提交 1.000）；
+      查不到 TF → 收到 78 帧、处理 0 帧、`tf_published=0`（父提交全部照收并发 TF）。
+  - [ ] **P2 L6/L7/L8/L11/L12/L13/L14/L15/L16 + 附带(a)(b)**：点云消费与 TF 时间戳、
+    协方差真实填充、odom QoS 对齐 `sensor_data`、ICP 弧度阈值、EKF 增益饱和与
+    Joseph 形式、GICP 缓存指纹、可观性掩码统一到 `map → odom`、新鲜度判定统一时钟域、
+    删除死声明
+    - [x] **L6 点云消费与 TF 时间戳**（`decision.md` D42）：`has_cloud_` 与消费戳在放锁
+      之前确定，`/tf` 的 `map → odom` 用被消费点云的时刻。`TransformIsStampedWithTheConsumedCloudTime`
+      父提交 TF 戳与最近点云戳最大偏差 50.150 ms、本提交 0.000 ms；
+      `CloudArrivingDuringAlignmentIsNotDropped` 父提交 600 ms 内只配到老帧（源点数 `{10}`），
+      本提交配到了配准期间到达的 77 点帧。
+    - [x] **L7 协方差真实填充**（`decision.md` D43）：`PoseUncertainty` + `pose_covariance()`
+      取代 `covariance.fill(0.0)`，按残差 / 内点率填对角、不可观方向乘
+      `filter_unobservable_noise_scale²`、无配准质量时写 1e3。节点级读数父提交
+      `INITIALIZING cov[x]=0.000 / OK cov[x]=0.000000 / 外部位姿 cov[x]=0.000`，
+      本提交 `1000.000 / 0.000100 / 1000.000`；`StateMessageCarriesTheCovariance`
+      在父提交行为下报 `covariance[0] evaluates to 0`。
+    - [x] **L8 里程计 QoS 对齐 `sensor_data`**（`decision.md` D44）：订阅从 `QoS(50)`
+      reliable 改成 `SensorDataQoS()`，启动打一行实际 QoS。`BestEffortOdometryUpstreamIsReceived`
+      父提交 `odom_received=0`（DDS 报 `RELIABILITY_QOS_POLICY` 不兼容）、本提交 146 帧全收；
+      13 条既有用例仍用 reliable 发布并通过，证明兼容方向没写反。
+    - [x] **L11 ICP 收敛判据拆米/弧度**（`decision.md` D45）：`AlignOptions` 增
+      `transformation_epsilon_rad`（默认 1e-3 rad），与 `transformation_epsilon_m`（1e-4 m）
+      分别比较；预算耗尽时把迭代次数与两项增量写进 `error`。`test_icp`
+      `MeterThresholdDoesNotSetRotationTolerance` 父提交 `iterations=1`、残余角度 0.1838 rad
+      就宣布收敛（本提交 10 次迭代、0.0000 rad）；`ExhaustedBudgetExplainsItself` 父提交
+      `converged=0 error=''`（本提交给出完整阈值与增量）。注：审计说的「几乎不收敛」在合成
+      点云上没有复现，实测定性为「量纲混用 + 失败无说明」，已写进 D45。
+    - [x] **L12 退化抑制不再随协方差增长失效**（`decision.md` D46）：不可观方向增益加
+      1 % 硬上限 `kMaxUnobservableGain`，`predict()` 给协方差对角加 `1.0 m²` / `0.25 rad²`
+      上限。`UnobservableDirectionWeightStaysCapped` 父提交外推 100 s 后 1 m 量测让病态方向
+      动 0.5025 m（隐含增益 0.502）、本提交 0.0100 m（0.010）；`CovarianceStopsGrowing`
+      父提交 `cov[x]=250.0025 cov[rx]=40.0001`、本提交 `1.0000 / 0.2500`。
+    - [x] **L13 EKF 入口挡非有限值、Joseph + 对称化**（`decision.md` D47）：`reset/predict/update`
+      全判 `is_finite()`，非有限量测丢弃（不 reset、不透传）；协方差改 Joseph 形式并
+      `(P+Pᵀ)/2`。父提交 `估计 x=nan`、`协方差有限=0`、`估计 x=9.0000 y=inf` 三条红；
+      `CovarianceStaysSymmetricAndPositive` 两侧都通过，作为回归守卫保留。
+    - [x] **L14 GICP 缓存键与参数下发**（`decision.md` D48）：target 缓存改成「地址 + 点数 +
+      16 点内容指纹」，PCL 参数每帧下发并新增 `set_options()`，`nr_iterations_` 收进
+      `GicpWithIterationCount`。`TargetCacheInvalidatesWhenContentChanges` 父提交
+      `converged=0 iterations=0 inlier=1.000 error='GICP 未收敛（iterations=0）'`
+      （对着旧靶标优化），本提交 `converged=1 iterations=1 inlier=1.000 x=0.050`。
+    - [x] **L15 可观性力臂改用被修正位姿的原点**（`decision.md` D49）：`analyze_observability()`
+      增可选 `lever_origin`（默认仍是 `transform.translation()`），节点传 `map_to_odom_` 原点。
+      回执：机器人距里程计原点 40 m 的「地面 + 单墙」场景，父提交语义 `unobs=5 cond=5.04e+06`、
+      判断翻转 0/6；本提交 `unobs=1 cond=616`、翻转 4/6。另加「不传 `lever_origin` 与父提交
+      逐位相同」的默认值守卫（`RotationLeverDefaultsToTheBodyPose`）。
+    - [x] **L16 算法路径不再独占执行器**（`decision.md` D50）：`MultiThreadedExecutor`（线程数
+      `clamp(hw, 2, 4)`）+ 六个互斥回调组（odom / cloud / align / obstacle / publish / service），
+      配准与聚类各占一组。回执（150 ms 忙等配准 @ 5 Hz，2 s 窗口）：多线程 `LOST=0 state_hz=50.0
+      max_odom_lag_ms=1.3 align_runs=19`；对照组（同一负载放单线程执行器）`state_hz=15.0`——
+      对照组已写进同一条用例，作为「负载足以证明执行器起作用」的证据。
+    - [x] **附带 (a) 聚类新鲜度改用节点时钟的收到时刻**（`decision.md` D51）：`on_obstacle_timer()`
+      不再用 `now - header.stamp` 判新鲜度，闸门也从 `has_cloud_` 改为「收到过点云」。
+      回执：传感器时钟偏移 −10 s 时，父提交 2000 ms 内障碍帧数 `0`，本提交 `95`，且发布戳与
+      点云戳偏差 `0 ms`。
+    - [x] **附带 (b) 删掉死声明 `update_health()`**（`decision.md` D52）：全仓 1 处声明、0 处定义、
+      0 处调用；删除后构建与 142 条测试不变（死声明没有可执行的「改前坏」证据，回执即调用图）。
+  - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
+    - [x] **L17 未匹配点的残差占位变成具名常量**（`decision.md` D53）：提
+      `kUnmatchedResidualMultiple = 4.0` 到公开头文件并写明「为什么是 4、为什么不能是 0/inf」。
+      回执：父提交该表达式是裸字面量（`4.0 * config_.residual_threshold_m`，无来源注释）、
+      头文件里没有这个常量；本提交新增用例 `UnmatchedPointsReportTheDocumentedResidual`
+      把值钉成契约（无邻格簇 `1.200 m`、有邻格簇 `0.545 m`）。
+    - [x] **L18 ascii PCD 坏行不再静默丢点**（`decision.md` D54）：新增
+      `PcdLoadResult::skipped_lines`、`PriorMapLoadResult::skipped_pcd_lines`、
+      `LocalizationNode::Diagnostics::skipped_pcd_lines`，两个节点在装载期 WARN。
+      回执：父提交（把计数逻辑退回）`L18 回执(NaN 行): ok=1 装载=2 点 跳过=0 行`、
+      `L18 回执(字段数不足): ok=1 装载=2 点 跳过=0 行`、节点级
+      `state=1 tf_published=6 跳过行数=0` 且日志无 WARN，三条全 FAILED；本提交三条回执
+      `跳过=1 行`、节点 `跳过行数=1` 且装载期打印
+      `[WARN] 先验地图有 1 行被跳过（字段数不足或 x/y/z 非有限），装载点数 3`。
+  - [x] **验收清单入口**：新增 `scripts/ci/test_ros_results.py`，把 `colcon test` 写下的
+    gtest XML 汇总成覆盖清单，并按名字断言 20 条发现的验收用例都在（L14 两条只在
+    `FORAY_WITH_PCL=ON` 时要求）。回执：`python3 -m pytest scripts/ci/test_ros_results.py -q -s`
+    在 PCL ON 构建上 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed`；在
+    `FORAY_RESULTS_ROOT=/ws/build-nopcl` 上 `17 个 / 117 个` + `2 passed, 1 skipped`（`decision.md` D55）。
+
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 
 ## 当前 Agent State
@@ -62,12 +193,17 @@ M5b 的承接方 `foray_simulation` 已建成并取证（首次 `OK` 3.78 s、�
 默认 ON 报 **75 tests**、`-DFORAY_WITH_PCL=OFF` 报 **70 tests**，两轮均 0 failures——
 差的那 5 条就是 `test_pcl_gicp`（4 个用例 + 该文件在 CTest 里的汇总条目），map 包单独口径
 是 ON 34 / OFF 29。CI 的 `build-ros2` 保留，防的是「只在容器里验过」。
+2026-11-03 完成审计整改 M10：节点级测试基建落地后，`colcon test` 口径从 73 条涨到
+**145 条**（`FORAY_WITH_PCL=OFF` 138 条），20 条发现的验收用例全部按名字被
+`scripts/ci/test_ros_results.py` 断言存在（`decision.md` D55）；健康契约、协方差契约、
+执行器要求与地图硬上限都已写进 `README.md`，取舍记在 `decision.md` D30–D55。
 
 ## 模糊点与待确认项
 
 - `foray_interfaces` 的 0.2.0 消息尚未落地；首版消息暂放 `foray_localization_ros`，迁移计划见 `decision.md` D8
-- `small_gicp` 不再计划：PCL GICP 已经是默认后端（`decision.md` D21），要继续替换得另立决策；
-  `decision.md` D9 里「首版用 PCL GICP + 内置 ICP 兜底」的设想已在 D21 落地
+- `small_gicp` 由 `decision.md` **D25 立为可选的编译期后端评估**（`FORAY_WITH_SMALL_GICP`，
+  默认 OFF，实测提速 < 15% 则不引入）——此前「不再计划」的表述已作废；PCL GICP 仍是默认后端
+  （`decision.md` D21），`D9` 里「首版用 PCL GICP + 内置 ICP 兜底」的设想已在 D21 落地
 - `bringup/config/heavy.yaml` 对应装甲兵种，不在 2027 3v3 阵容（步兵×2 + 哨兵×1，
   见 `foray_docs/algorithm_structure.md` §12）；保留为预留配置，不参与验收
 - 2027 场地地图需赛前场地窗口实测；当前以录制包回放验证（无实车，M5 未完成）

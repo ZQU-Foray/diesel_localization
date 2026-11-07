@@ -47,7 +47,8 @@
 │       ├── check_contracts.py     契约快照：接口变更必须同步 contracts.sha256
 │       ├── check_params.py        README 参数表 ↔ declare_parameter ↔ 兵种配置三方一致
 │       ├── check_tree_doc.py      本文件与实际跟踪文件双向一致
-│       └── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
+│       ├── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
+│       └── test_ros_results.py    把 colcon 的 gtest 结果汇总成覆盖清单（pytest 收集）
 │
 ├── docs/
 │   └── probe-style.md             门禁风格探针（test_guards 注入缺陷用，无需求语义）
@@ -62,16 +63,19 @@
 │   │   │   ├── health.hpp             健康状态机与位姿源仲裁
 │   │   │   ├── manifest.hpp           地图 manifest 解析/校验
 │   │   │   ├── pose.hpp               Pose3D / RegistrationSample 等值类型
+│   │   │   ├── pose_ekf.hpp           融合层 6 维误差状态 EKF
 │   │   │   └── sha256.hpp             文件/内存 sha256（地图完整性校验）
 │   │   ├── src/
 │   │   │   ├── geometry.cpp
 │   │   │   ├── health.cpp
 │   │   │   ├── manifest.cpp
+│   │   │   ├── pose_ekf.cpp
 │   │   │   └── sha256.cpp
 │   │   └── test/
 │   │       ├── test_geometry.cpp
 │   │       ├── test_health.cpp
 │   │       ├── test_manifest.cpp
+│   │       ├── test_pose_ekf.cpp
 │   │       └── test_sha256.cpp
 │   │
 │   ├── foray_localization_map/         L3 地图与配准，无 ROS
@@ -84,6 +88,7 @@
 │   │   │   ├── alignment_metrics.hpp  共享配准质量口径 + 体素近邻索引
 │   │   │   ├── grid_map.hpp           PGM 读取 + 2D 占据栅格查询
 │   │   │   ├── icp_aligner.hpp        内置点到点 ICP 后端（PCL 关闭时的兜底）
+│   │   │   ├── observability.hpp      点面残差可观测性 + 目标点云法向缓存
 │   │   │   ├── pcd_loader.hpp         PCD（ascii/binary）读取
 │   │   │   ├── pcl_gicp_aligner.hpp   PCL GICP 后端（默认，仅 ON 时编译）
 │   │   │   ├── point_cloud.hpp        PointCloud 容器/体素降采样/变换
@@ -94,6 +99,7 @@
 │   │   │   ├── alignment_metrics.cpp
 │   │   │   ├── grid_map.cpp
 │   │   │   ├── icp_aligner.cpp
+│   │   │   ├── observability.cpp
 │   │   │   ├── pcd_loader.cpp
 │   │   │   ├── pcl_gicp_aligner.cpp   仅 FORAY_WITH_PCL=ON 时参与编译
 │   │   │   ├── point_cloud.cpp
@@ -102,6 +108,7 @@
 │   │   └── test/
 │   │       ├── test_grid_map.cpp
 │   │       ├── test_icp.cpp
+│   │       ├── test_observability.cpp
 │   │       ├── test_pcd_loader.cpp
 │   │       ├── test_pcl_gicp.cpp      仅 FORAY_WITH_PCL=ON 时注册
 │   │       ├── test_point_cloud.cpp
@@ -131,8 +138,11 @@
 │   │   │   ├── map_server_node.cpp
 │   │   │   └── map_server_node_main.cpp    map_server_node 可执行入口
 │   │   └── test/
+│   │       ├── localization_node_test_support.hpp  节点级测试夹具（临时地图/注入后端/话题驱动）
 │   │       ├── test_adapters.cpp
-│   │       └── test_conversion.cpp
+│   │       ├── test_conversion.cpp
+│   │       ├── test_localization_node.cpp          在进程内构造主节点跑状态/配准/诊断
+│   │       └── test_localization_node_map_errors.cpp  地图不可用时一帧 TF 都不发
 │   │
 │   ├── foray_localization_relocalization/  可选 ONNX Runtime CPU 重定位（默认 OFF）
 │   │   ├── CMakeLists.txt

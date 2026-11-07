@@ -34,3 +34,13 @@ foray_localization:
     lidar_timeout_sec: 0.2
     warmup_frames: 3
     recover_frames: 3
+    fov_horizontal_deg: 30.0
+    fov_vertical_deg: 180.0
+    fov_center_yaw_deg: 0.0
+    observability_ratio_threshold: 0.05
+    min_source_points: 0
+    max_unobservable_dofs: 6
+    profile_enabled: false
+    filter_enabled: false
+    filter_measurement_noise_m: 0.05
+    filter_unobservable_noise_scale: 10.0

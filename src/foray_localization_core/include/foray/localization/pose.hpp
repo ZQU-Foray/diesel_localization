@@ -8,6 +8,7 @@
 #include <Eigen/Geometry>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -54,6 +55,16 @@ struct RegistrationSample {
     double inlier_ratio{0.0};
     /// 后端原始 fitness（越小越好）；仅用于日志，不参与状态判定。
     double fitness{0.0};
+    /// 参与配准的源点总数；与 `inlier_ratio` 相除可还原内点绝对数。
+    /// 点数太少时即使内点率 100% 也不足以约束 6 个自由度（decision.md D23）。
+    std::size_t source_points{0};
+    /// 点面残差信息矩阵的条件数（最大 / 最小特征值）。越大说明越接近退化。
+    double condition_number{0.0};
+    /// 不可观的自由度个数（0..6）。大于 0 表示这一帧只约束了一部分方向。
+    int unobservable_count{0};
+    /// 本样本是否带「配准质量」（残差 / 内点率 / 可观性）。外部位姿这类不带质量信息的
+    /// 位姿源置 false：健康状态机此时只能判新鲜度，不能假装内点率是 100%（D38）。
+    bool has_registration_quality{true};
 };
 
 /// 位姿源选择策略。
