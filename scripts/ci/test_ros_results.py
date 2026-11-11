@@ -50,6 +50,10 @@ REQUIRED_CASES = {
     "AutoPolicySwitchesBackToLidarWhenItReturns": "L4",
     # L5：声明顺序修好后参数真的生效
     "MinSourcePointsParameterTakesEffect": "L5",
+    # L4（decision.md D57）：LOST 分两档——从未成功过按 warmup 自恢复，成功过则粘滞到 Relocalize
+    "LostBeforeFirstSuccessRecoversFromStartup": "L4",
+    "EnterLostIsStickyAfterFirstSuccess": "L4",
+    "EnterLostKeepsTheFirstReason": "L4",
     # L3：odom 的 child_frame_id 校验与 TF 补换算
     "OdometryChildFrameIsConvertedThroughTf": "L3",
     "OdometryWithoutChildFrameTfIsDropped": "L3",
