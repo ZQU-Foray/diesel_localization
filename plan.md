@@ -175,7 +175,14 @@
   `INITIALIZING`。补上帧之后 A2 仍掉锁，那是另一条独立成因（点数漏斗塌缩，见 i6）。
   顺序：i1 解 `ready` → i2/i3 健康契约 → i4/i5 判据与口径可见性 → i6 精度 → i7 验收可读性 → i8 收口。
   **进度（2026-11-11，宿主直接部署 ROS 2 humble，两个 colcon 空间 `foray_sim_ws` +
-  `foray_simulation`）**：i1/i3/i4/i5/i6/i7 代码与回执已落，i2 判据待故障注入回执，i8 待收口。
+  `foray_simulation`）**：i1–i8 全部落地并提交（仿真仓 `fix/m11-body-tf`，本仓
+  `fix/m11-health-contract`）；下列回执取自**已提交**的二进制。
+  回执五（终验，ROS_DOMAIN_ID=66，判据修正后的最终代码）：`ready=PASS ready_delay_s=0.93
+  lidar_s=0.13 localization_s=0.93 bt_navigator=active controller_server=active
+  last_state=OK state_reason="warmup complete"`；`a2 samples=8336 max_xy_err=0.039
+  max_yaw=0.154 lost=0 verdict=PASS`；漏斗 `raw=18818 crop=18818 voxel=3197
+  align_source=1697 align_target=4137`；`tf unavailable` 0 条、LOST 0 条（正向链路无
+  误报）。
   回执一（整链就绪，`navigation_sim.launch.py headless:=true`）：
   `ready=PASS ready_delay_s=21.09 lidar_s=0.71 localization_s=1.05 bt_navigator=active
   controller_server=active last_state=OK state_reason="warmup complete"`；`tf2_echo
