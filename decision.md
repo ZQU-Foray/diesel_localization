@@ -1971,7 +1971,9 @@ Consequences:
   三行，没有点云帧这一层：需求文档缺的不是实现，而是「本节点要求 `base_frame ← 点云帧` 的
   TF 存在」这句话。这条补在 i2 里一起改（同一次改动把 D56/D57 的契约部分写进 README）。
 
-状态：已决策，待实现（`plan.md` M11 i1）。
+状态：已实现（2026-11-11，`plan.md` M11 i1：仿真仓 `localization_sim.launch.py` 发恒等
+`base_footprint → body`，静态用例 + `body_tf:=false` 故障注入开关；宿主实测 `tf2_echo
+base_footprint body` → 恒等，整链 `ready=PASS`）。
 
 ---
 
@@ -2005,7 +2007,8 @@ Consequences:
   形态；`test_health` 补两条对应用例（自恢复、`OK` 后不恢复）。
 - 启动期 `LOST` 的 reason 必须能与「无有效配准」区分开，否则事后看日志仍分不清是哪一档。
 
-状态：已决策，待实现（`plan.md` M11 i3）。
+状态：已实现（2026-11-11，`plan.md` M11 i3：`health.cpp` 的 `ever_ok_` 分档 +
+`test_health` 三例，`colcon test` 5/5 通过、`HealthMonitor` 12 例全绿）。
 
 ---
 
@@ -2042,7 +2045,8 @@ Consequences:
 - `param-contract` 的三处一致（参数表 / `declare_parameter` / 配置）不受影响：动的是配置取值，
   键集合与默认值都不变。
 
-状态：已决策，待实现（`plan.md` M11 i4）。
+状态：已实现（2026-11-11，`plan.md` M11 i4：`sentry.yaml` 改 `max_unobservable_dofs: 3`
+与 `min_source_points: 100`，`check_params.py` 加语义断言（改回 6 时 `exit=1`，还原 `exit=0`））。
 
 ---
 
@@ -2082,4 +2086,41 @@ Consequences:
 - `min_source_points` 从 0 抬到 100（D58）之后，点数塌缩会显式降级而不是静默跳过配准；
 - 点数漏斗进 `profile_enabled` 行，默认关闭时零额外开销。
 
-状态：已决策，待实现（`plan.md` M11 i5/i6）。
+状态：已实现（2026-11-11，`plan.md` M11 i5/i6：节点启动打印合并后的时限与判据、漏斗进
+`profile_enabled` 行、仿真仓把三项时限提成 `DeclareLaunchArgument` 并把视场覆盖成 360°；
+实测漏斗 `raw=18491 crop=18491 voxel=3141 align_source=1695 align_target=4137`，A2 由
+`lost=5571 FAIL` 转为 `lost=0 samples=14394 max_xy_err=0.035 verdict=PASS`）。
+
+## D60 「TF 缺失」是独立成因，只能由状态机入口显式表达
+
+Context: `lookup_base_from()`（`localization_node.cpp:302-322`）失败时只留一条节流 WARN，
+而两个回调都在「设置 `has_cloud_` / `has_odom_` 之前」就 `return`（`:354-360`、`:400-411`）；
+`publish_state()` 原有的四支成因（无地图、外部位姿接管、odom 断流、lidar 断流）全部要求
+「至少收到过一帧」，于是缺帧时**一支都不命中**，状态无限冻在 `INITIALIZING`。消息本身有
+`reason` 字段（`msg/LocalizationState.msg:35-36`），但它从来不含这一成因，下游（含验收脚本）
+只能看到 `last_state=INITIALIZING`，排查只能回翻节点日志（审计 L3/L8）。
+
+Decision: 节点保存最近一次 TF 失败的完整描述（`<base><-<child>: <tf2 原文>`），
+`lookup_base_from()` 成功即清空；`publish_state()` 在「地图不可用」「外部位姿」之后、
+「odom 超时」「激光断流」之前增一支：
+`enter_lost("tf unavailable: " + tf_error_, now_ns)`。判据只看**此刻 TF 是否通**，不看
+`has_odom_`；不新增参数、不改消息定义（`reason` 是既存字段、`state_name` 不加，理由同 D56）。
+
+Reason: 里程计照常到达、只有点云帧查不到变换时，配准同样一帧都跑不起来——若让它落到
+「激光断流」分支，`reason` 会把排查方向直接指向传感器，而这正是本轮 L1 里真实发生过的误判。
+把「查不到帧」和「帧到了但不够好」分开表达，是这类故障唯一可自动诊断的入口。
+
+Alternatives: ①在激光断流分支的 reason 后面拼接 TF 原文——否决：一句话里两个成因，
+下游按前缀匹配时主因反而模糊，且日志里会同时出现两个互不相干的说法；②新增 `state_name`
+字段——否决：同一事实存两份，正是 `AGENTS.md` 点名要防的分叉。
+
+Consequences:
+- 缺帧的表现从「无限 `INITIALIZING`」变成「`LOST` + 可读 `reason`」；
+- 因 `ever_ok_` 为假，TF 补上后按 `warmup_frames` 自恢复（D57），不会留下永久失锁；
+- `accept.py ready` 直接打印 `state_reason`，现场不必再翻节点日志。
+
+实测回执（2026-11-11，宿主，`body_tf:=false` 故障注入）：`state: 3`、
+`reason: 'tf unavailable: base_footprint<-body: "body" passed to lookupTransform argument
+source_frame does not exist. '`；对照整改前同一注入下 `last_state=INITIALIZING`。
+
+状态：已实现（2026-11-11，`plan.md` M11 i2）。
