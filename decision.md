@@ -1955,11 +1955,21 @@ Alternatives: ①把 `point_lio` 的帧名改成 `base_footprint`——否决：
 Consequences:
 - 改动落在仿真仓的 launch（一条静态发布器）与其断言用例「launch 里存在
   `base_footprint → body`」；本仓运行期不变。
-- **前置条件未闭**：`point_lio` 自己在 `laserMapping.cpp:292` 也广播 `camera_init → body`。
-  如果仿真里这条 TF 真的发出来，那么再加 `base_footprint → body` 会让 `body` 有两个父，问题
-  只是换个方向复发。动手前必须先取证（`ros2 run tf2_tools view_frames`），再在「让 `point_lio`
-  只发 odom 话题」与「改它的帧名」之间选一条；不取证就加，是把一种断树换成另一种。
-- 实车不受影响：实车的 `body` 由 `point_lio` 给，本次补帧只针对没有 `body` 的仿真链。
+- 前置已取证（2026-11-11）：`point_lio` 自己也广播 TF（`laserMapping.cpp:280-292`，受
+  `publish.tf_send_en` 控制、默认 `true`），但 `child_frame_id` 写的是 `aft_mapped`、
+  `header.frame_id` 是 `camera_init`——**不是 `body`**。`body` 只出现在 odom 的
+  `child_frame_id`（`:270`）与点云 header（`:228`）里，TF 树里没有它。所以补一条
+  `base_footprint → body` 不会给任何 frame 造出第二个父；`camera_init → aft_mapped` 是
+  一对孤立的两节点树，只要没人跨树查询就无害（本次链上没有这种订阅者）。
+  「先补帧会不会和 `point_lio` 抢父」这个担心因此不成立——但它值得写在这里：上一轮就是
+  先怀疑、后取证才没照着错的假设动手。
+- 实车链**不是**「本来就有、无需管」：`point_lio` 从来不发布 `body` 的 TF（它只把 `body` 写进
+  odom 的 `child_frame_id` 与点云 header），所以实车同样缺这条父级，只是没人在实车链上跑过
+  定位。谁在实车上补（`robot_state_publisher` 的 URDF 关节，还是厂商驱动给出的外参）要在
+  实车 launch 里落实——这是 `foray_simulation` 与其上游的活，本仓只声明「我要它存在」。
+- 本仓 README 的 `### TF` 表目前只有 `map → odom`、`odom → lidar`、`base_footprint → lidar`
+  三行，没有点云帧这一层：需求文档缺的不是实现，而是「本节点要求 `base_frame ← 点云帧` 的
+  TF 存在」这句话。这条补在 i2 里一起改（同一次改动把 D56/D57 的契约部分写进 README）。
 
 状态：已决策，待实现（`plan.md` M11 i1）。
 

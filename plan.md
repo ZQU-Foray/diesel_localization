@@ -178,9 +178,12 @@
     `body`（`laserMapping.cpp:228` 点云帧、`:270` 里程计子帧），而
     `localization_sim.launch.py` 只发了 `base_footprint→front_mid360`。修法：launch 增一条
     `base_footprint→body` 恒等静态 TF（**父 = `base_footprint`，方向不可反**，D56）。
-    前置未决：`point_lio` 自己在 `laserMapping.cpp:292` 也广播 `camera_init→body`，真发出来
-    `body` 就有两个父——先 `ros2 run tf2_tools view_frames` 查它到底发没发，再决定让 `point_lio`
-    只留 odom 话题、还是改它的帧名；不查清就加，等于把一种断法换成另一种。
+    已验证的一条：`point_lio` 自己也广播 TF（`laserMapping.cpp:280-292`，受 `publish.tf_send_en`
+    控制、默认 `true`），但发的是 `camera_init → aft_mapped`，**不是 `body`**——`body` 只作为
+    odom 的 `child_frame_id`（`:270`）与点云 header（`:228`）出现，TF 树里根本没有它。所以补
+    这一条不会给任何 frame 造出第二个父；`camera_init → aft_mapped` 是一对孤立的两节点树，
+    没有订阅者跨树查询就无害。实车链**不是**「本来就有」：`point_lio` 从不发布 `body` 的 TF，
+    实车同样缺这条父级（只是还没人在实车上跑过定位），谁补要在实车 launch 里落实。
     断言：仿真仓加静态用例「launch 里存在 `base_footprint→body`」；验收：`accept.py ready`
     由 `FAIL` 转 `PASS`（手工补帧实测 `ready_delay_s=1.51`）。
   - [ ] **i2 L3 TF 缺失要进状态机、要带 reason**（本仓）：`lookup_base_from()`
@@ -191,7 +194,10 @@
     `publish_state()` 增一支「TF 缺失」→ `enter_lost("tf unavailable: <base>←<child>: <detail>")`；
     其余分支在 TF 失败未消除时把同一条成因追加进 reason。`LocalizationState` **不动**：
     `reason` 是既存字段（`msg/LocalizationState.msg:35-36`），`state_name` 也不加——下游本来就
-    按常量映射名字，同一事实存两份正是 `AGENTS.md` 点名要防的分叉。验收：节点用例改「不发 TF」
+    按常量映射名字，同一事实存两份正是 `AGENTS.md` 点名要防的分叉。README 同步补两句：
+    `### TF` 表里点云帧那一层由上游给（本仓只发布 `map → odom`），以及「查不到就丢帧、并按
+    TF 缺失报 `LOST`」——本仓需求文档现在只有 `odom → lidar` / `base_footprint → lidar`，
+    缺的正是 `body` 这一条前提。验收：节点用例改「不发 TF」
     → `state=LOST` 且 reason 含 `tf unavailable`（现基线停在 `INITIALIZING`，红 → 绿）。
   - [ ] **i3 L4 启动期 `LOST` 可自恢复**（本仓）：`health.cpp:172-176` 一进 `LOST` 就不再
     看样本，`reset()` 是唯一出口；而启动期 TF 晚到几秒就够判 `LOST`（`:241-245`），帧全到位后
