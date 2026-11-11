@@ -1921,3 +1921,155 @@ Consequences:
   （跳过的是 L14 两条，因为该构建没有 PCL 后端）。
 
 状态：已实现（2026-11-03）。
+
+---
+
+## D56 `body` 帧由本体侧补，方向只能是 `base_footprint → body`
+
+Date: 2026-11-11
+
+Context: 仿真联调时定位节点一条状态都没有离开 `INITIALIZING`，日志只有每 2 s 一条
+`TF body->base_footprint 失败: source_frame does not exist`。追下去是帧契约断裂：`point_lio`
+把点云与里程计的子帧都硬编码成 `body`（`laserMapping.cpp:228`、`:270`），而仿真链的 launch
+只发了 `base_footprint → front_mid360` 一条静态 TF，`body` 在 TF 树里根本不存在；定位节点
+要查的是 `base_footprint ← body`（D37 的换算前提），查不到就在回调里早退，连
+`has_cloud_`/`has_odom_` 都不会被置起。
+
+Decision: 仿真侧补一条 `base_footprint → body` 的恒等静态 TF——父是 `base_footprint`，
+子才是 `body`。这条 TF 属于「本体自述」，与传感器外参（`base_footprint → front_mid360`）
+同一类，放在同一条 launch 的静态发布器里；仿真仓用自己的 `decision.md` 条目留痕。
+
+Reason: tf2 只允许一棵树、每个 frame 一个父。`base_footprint` 的父已经是 `odom`（仿真侧由
+`sensor_scan_generation` 补，其 `decision.md` D17），所以 `body` 只能挂在 `base_footprint`
+**之下**：`base_footprint → body` 只是给 `body` 补一个父，整棵树仍是一棵。反过来发
+`body → base_footprint` 等于给 `base_footprint` 换父，实测立刻变成
+`Could not find a connection between 'base_footprint' and 'body' ... two or more unconnected trees`：
+导航侧拿到两棵互不连通的树，`map`、`odom` 一侧全部失效。
+
+Alternatives: ①把 `point_lio` 的帧名改成 `base_footprint`——否决：那是对上游 fork 的语义改动，
+会连带改 odom 话题的 `child_frame_id` 解释与回放数据，而本仓只是它的订阅者；②让定位节点
+不查 TF、直接信任里程计话题——否决：D37 已经规定了「`Odometry.pose` 按 `odom → child` 解释、
+`child != base` 时必须用 TF 补换算」，绕过 TF 等于把「帧缺失」变成静默的位姿错算；③在每条
+链上各补一条、让两个父并存——否决：tf2 直接报错，没有「并存」这个选项。
+
+Consequences:
+- 改动落在仿真仓的 launch（一条静态发布器）与其断言用例「launch 里存在
+  `base_footprint → body`」；本仓运行期不变。
+- **前置条件未闭**：`point_lio` 自己在 `laserMapping.cpp:292` 也广播 `camera_init → body`。
+  如果仿真里这条 TF 真的发出来，那么再加 `base_footprint → body` 会让 `body` 有两个父，问题
+  只是换个方向复发。动手前必须先取证（`ros2 run tf2_tools view_frames`），再在「让 `point_lio`
+  只发 odom 话题」与「改它的帧名」之间选一条；不取证就加，是把一种断树换成另一种。
+- 实车不受影响：实车的 `body` 由 `point_lio` 给，本次补帧只针对没有 `body` 的仿真链。
+
+状态：已决策，待实现（`plan.md` M11 i1）。
+
+---
+
+## D57 `LOST` 分两档：从未成功过可自恢复，成功过则粘滞到 `Relocalize`
+
+Date: 2026-11-11
+
+Context: 启动期 TF 晚到几秒（或干脆缺失）就足以让健康状态机判 `LOST`：`health.cpp:241-245`
+在 `INITIALIZING` 下「持续无效 ≥ `lost_timeout_sec`」直接转 `LOST`。而 `LOST` 一旦成立，
+`health.cpp:172-176` 就再也不看样本，只有显式 `reset()`（`Relocalize` 服务）能出来。结果是
+外部条件一恢复、帧全到位，状态也永远停在 `LOST`——本次联调实测就是这样：`last_state=LOST`
+一直挂到验收超时，而定位精度本身（`max_xy_err=0.076 m`）毫无问题。
+
+Decision: 给 `HealthMonitor` 一个「曾经 `OK` 过」的事实（`ever_ok_`），`LOST` 的出口分档：
+- **从未 `OK` 过**（启动期/重定位请求之后还没成功过）：连续 `warmup_frames` 帧有效配准即自动
+  回 `OK`，reason 里写明这是启动期恢复，不伪装成「一切正常」。
+- **`OK` 过之后又落 `LOST`**：保持现状——粘滞，只接受 `Relocalize`，`reset()` 顺手清 `ever_ok_`。
+
+Reason: 两种 `LOST` 的物理含义不同。启动期那种是「外部前提没就位」（TF 缺失、点云没来、
+地图刚装完），把它钉死等于让一次可恢复的启动失败变成永久故障；而成功过之后掉 `LOST` 说明
+位姿已经不可信，此时自动复活等于在错误位姿上静默重启，正是 README 健康契约禁止的行为。
+
+Alternatives: ①新增 `INIT_FAILED` 状态——否决：状态枚举写在消息里，是接口，加一个值意味着
+所有下游 `switch` 都要改，且新状态要回答的问题（能不能消费）已经由 `pose_valid=false` 回答；
+②启动期不判 `LOST`、就一直 `INITIALIZING`——否决：那正是本次联调的症状，下游无法区分
+「马上就好」与「永远不会好」；③`LOST` 全可自恢复——否决：`Relocalize` 是操作员对「我知道
+位姿错了」的显式表达，自动恢复会让这个服务失去意义。
+
+Consequences:
+- 健康契约（README）要补一句「`LOST` 在从未 `OK` 过期间可自恢复」，并说明启动期恢复的 reason
+  形态；`test_health` 补两条对应用例（自恢复、`OK` 后不恢复）。
+- 启动期 `LOST` 的 reason 必须能与「无有效配准」区分开，否则事后看日志仍分不清是哪一档。
+
+状态：已决策，待实现（`plan.md` M11 i3）。
+
+---
+
+## D58 退化判据的默认值只能是「关闭」，兵种配置必须显式打开并有门禁看守
+
+Date: 2026-11-11
+
+Context: `max_unobservable_dofs` 的默认值是 6，而 `kDofCount` 也是 6（`observability.hpp:30`），
+`health.cpp:189-190` 的比较因此恒真；三份兵种配置又都抄了默认值 6，于是这条判据从未生效过
+一次。实测配准退化到「5/6 个方向不可观」（condition 1e10、点面约束只剩几十个）时，状态照样
+`OK`、`pose_valid=true`，位姿靠按方向冻结继续输出，节点每帧打一条 WARN 却从不降级。同一条
+逻辑下 `min_source_points` 是 0，源点塌到 64–70 点也照样进配准，失败只表现为配准后端
+「无有效对应、iterations=0」。
+
+Decision: 默认值保持「关闭」（`6` / `0`，README 已声明语义），由**兵种配置**显式打开：哨兵
+配置用 `max_unobservable_dofs: 3`、`min_source_points: 100`；方向约束没启用的步兵/重装配置
+保留 `6`，但要在配置里注明「本配置方向约束未启用，此判据不参与」。同时给 `check_params.py`
+加一条语义断言：`observability_ratio_threshold > 0` 的配置必须 `max_unobservable_dofs < 6`。
+节点启动时把生效的判据打一行日志。
+
+Reason: 「默认不动行为」是对的——默认值变更会连带改参数表、三份配置与所有既有回执；但
+「默认关闭」不等于「配置可以继续抄默认」。判据写在代码里是能力，写在配置里才是决定；某个
+配置把能力关着，而日志又每帧都在喊退化，等于把「我们已经知道」变成「我们不打算处理」。
+门禁断言挡的是下一个人复制粘贴。
+
+Alternatives: ①改代码默认值为 3——否决：README 的「6 表示不启用」是既有契约，改默认会让
+`param-contract` 与参数表一起动，且「默认不改变行为」的原则（D39 同类）比「默认更安全」
+更该守；②不可观就直接把 `pose_valid` 置 false——否决：D23 的方向冻结是设计不是 bug，不可观
+的自由度不该拖着可观的一起失效，正确动作是降级而不是失效；③只改配置、不加门禁——否决：
+本次的成因就是「照着默认值写配置」，没有断言就一定会再发生。
+
+Consequences:
+- 实车阈值仍需按现场数据复标（M6 未完成），本轮给出的是「明显不成立」的下限，不是标定值。
+- `param-contract` 的三处一致（参数表 / `declare_parameter` / 配置）不受影响：动的是配置取值，
+  键集合与默认值都不变。
+
+状态：已决策，待实现（`plan.md` M11 i4）。
+
+---
+
+## D59 仿真口径由仿真仓显式声明，不继承实车基线；参数差异要先测量再改
+
+Date: 2026-11-11
+
+Context: 仿真链里定位节点跑到「源点 64–70、目标 4137、GICP `iterations=0`、A2 `lost=5571`」。
+先说不是原因的两条：出生点在场心，先验图覆盖完整（10 m 内就是全图 102433 点，前向 30° 的
+楔形里也有 10036 点），所以不是「走出地图覆盖」；`crop_by_fov` 的实现就是「相对中心 ±半个开
+口角」，四条单位测试覆盖，也不是裁切写错。真正可疑的是**传感器几何与参数口径的错配**：
+`fov_horizontal_deg: 30.0` 是实车人群场景下 D26 的结论，而仿真雷达是 gz 的 1875×32 全 360°
+规则扫描——60000 点被裁到约 4992 点，再被 0.10 m 体素压成两位数；实车 Livox MID-360 是非重复
+稀疏扫描，同样的 30° + 0.10 m 体素根本不是同一个采样问题。超时三项同理（仿真侧的理由是
+`point_lio` 7 Hz、软件渲染点云 4–7 Hz，对应仿真仓 `decision.md` D13）。
+
+Decision: 仿真链与实车基线的每一处差异，都由仿真仓的 launch 显式覆盖并注明依据（视场、三项
+超时），不再「继承实车 yaml 的默认值」；本仓参数表加脚注说明哪些项会被仿真链路覆盖、依据在
+哪里。同时把点数漏斗补进已有的 `profile_enabled` 那行日志（原始 / 裁切后 / 体素后 / 配准
+source、target），**不新增参数**；拿到漏斗数据之前，不调 `voxel_leaf_m`，也不调
+`align_max_correspondence_m`（后者约等于 2× 地图体素，本身就是合理值）。
+
+Reason: 同一个参数在两套传感器几何下含义不同，这件事只能在「谁懂那个环境」的地方声明。
+数值本身没有错，错在**没有人知道当前跑的是哪一套**：日志里 `lost_timeout_sec` 到底是 1.0 还是
+5.0 无法分辨，现场看日志就会往错的方向查。至于 `voxel_leaf_m`，在没有点数漏斗之前调它，是用
+症状猜原因——D25 的原则就是先量再改。
+
+Alternatives: ①把哨兵配置改成 360°/5 m 对应距离——否决：实车的 30° 有 D26 的实测收益，为
+仿真牺牲实车是本末倒置；②仿真单独用一份 yaml——否决：同一套代码两份参数清单必然分叉，正
+是 D18 记过的教训；覆盖项写在 launch 里、逐条带注释，改的时候一眼能看到依据；③直接调体素或
+对应距离把点数抬上去——否决：没测出是哪一段把点丢掉的，改哪个都是碰运气，而 A2 的
+`max_xy_err=0.076 m` 恰好说明「精度看起来很好、其实配准根本没跑」这种假象有多具有欺骗性。
+
+Consequences:
+- 仿真仓 launch 多四个覆盖项（`fov_horizontal_deg` + 三项超时），每项注释指向其
+  `decision.md` D13；
+- `min_source_points` 从 0 抬到 100（D58）之后，点数塌缩会显式降级而不是静默跳过配准；
+- 点数漏斗进 `profile_enabled` 行，默认关闭时零额外开销。
+
+状态：已决策，待实现（`plan.md` M11 i5/i6）。
