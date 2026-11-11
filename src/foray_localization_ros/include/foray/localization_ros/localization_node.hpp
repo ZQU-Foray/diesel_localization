@@ -109,6 +109,14 @@ class LocalizationNode : public rclcpp::Node {
         double to_pcl_ms{0.0};
         double voxel_ms{0.0};
         double align_ms{0.0};
+        /// 点数漏斗（审计 L7 / decision.md D58）：原始 → 视场裁切后 → 体素后 → 送进配准的
+        /// source，以及 target（先验图体素后的点数）。耗时不能解释「配准无有效对应」，
+        /// 只有点数能：仿真实测 60000 点经 30° 裁切与 0.10 m 体素后只剩 64~70 点。
+        double raw_points{0.0};
+        double crop_points{0.0};
+        double voxel_points{0.0};
+        double align_source{0.0};
+        double align_target{0.0};
         std::size_t samples{0};
         std::int64_t window_start_ns{0};
     };
@@ -164,6 +172,12 @@ class LocalizationNode : public rclcpp::Node {
     /// 地图不可用的原因（空 = 地图正常）。非空时健康状态被锁在 `LOST`，
     /// `map → odom` 一帧都不发：没有地图就没有配准，任何位姿都是无源的（decision.md D36）。
     std::string map_error_;
+    /// 最近一次 TF 查询失败的原因（空 = 最近一次查询成功）。
+    /// `on_cloud()`/`on_odometry()` 拿不到外参就丢帧，于是一个样本都进不了健康状态机；
+    /// 没有这条记录，`publish_state()` 就看不出「TF 缺失导致配准从未跑起来」，
+    /// 状态会永久冻在 `INITIALIZING`（审计 L3）。查询发生在不持 `mutex_` 的回调里，故单独配锁。
+    std::string tf_error_;
+    std::mutex tf_error_mutex_;
     /// 目标侧近邻索引与法向缓存，随地图生命周期只建一次（decision.md D25）。
     /// 两者都持有 `map_.cloud` 的引用，必须在 `map_` 之后声明、在 relocad 时整体重建。
     std::shared_ptr<foray::localization_map::PointCloudIndex> map_index_;
