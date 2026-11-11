@@ -43,6 +43,11 @@ NODE_SOURCES = {
 # 来源：README「关键参数」段末注 + src/foray_localization_bringup/launch/localization.launch.py。
 LAUNCH_INJECTED = frozenset({"map_manifest", "verify_map_hashes"})
 
+# 位姿自由度总数，与 `src/foray_localization_core/include/foray/localization_map/observability.hpp`
+# 的 `kDofCount` 相同。本脚本只看 yaml，不解析 C++，所以这里按事实重述一次；
+# 两边漂移的后果是「判据悄悄失效」，因此改动时两处必须一起改（decision.md D58）。
+K_DOF_COUNT = 6
+
 # declare_parameter<T>("name", default)
 DECLARE_RE = re.compile(
     r'declare_parameter<([^>]+)>\(\s*"([^"]+)"\s*,\s*(.+?)\s*\)\s*;'
@@ -147,6 +152,39 @@ def parse_config(path: Path) -> dict[str, set[str]]:
     return result
 
 
+def parse_config_values(path: Path) -> dict[str, dict[str, str]]:
+    """解析兵种 yaml 的「键: 值」原文，返回 {节点名: {键: 值}}。
+
+    与 `parse_config()` 同一套手写规则，区别只是保留冒号右侧的值——
+    键集合一致不代表值说得通：`max_unobservable_dofs: 6` 也是合法的键值对，
+    但它等于把退化判据关掉（审计 L5），只有看值才拦得住。
+    """
+    result: dict[str, dict[str, str]] = {}
+    node: str | None = None
+    in_params = False
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.split("#", 1)[0].rstrip()
+        if not stripped.strip():
+            continue
+        indent = len(stripped) - len(stripped.lstrip())
+
+        if indent == 0 and stripped.endswith(":"):
+            node = stripped[:-1].strip()
+            in_params = False
+            continue
+        if indent == 2 and stripped.strip() == "ros__parameters:":
+            in_params = True
+            if node is not None:
+                result.setdefault(node, {})
+            continue
+        if indent == 4 and in_params and node is not None and ":" in stripped:
+            key, value = stripped.strip().split(":", 1)
+            result[node][key.strip()] = value.strip()
+
+    return result
+
+
 def as_number(raw: str) -> float | None:
     """尝试把默认值原文转成数字；失败返回 None。"""
     try:
@@ -246,6 +284,25 @@ def main() -> int:
                     f"{config.name}: 缺少必需参数「{key}」"
                     f"（非 launch 注入，兵种配置必须给出）"
                 )
+
+    # ---- 4. 退化判据不许被写成「等于关闭」 ----
+    # `max_unobservable_dofs` 的上限是自由度总数 6（observability.hpp 的 kDofCount）。
+    # 写成 6 时「六个方向全不可观」也满足 `<=`，判据永远为真——审计 L5 实测：
+    # 配准退化 5/6 方向不可观时位姿照常输出，日志刷 WARN 但没有任何降级。
+    # 语义断言：只要方向约束是开着的（threshold > 0），容忍数就必须小于全自由度。
+    for config in configs:
+        values = parse_config_values(config)
+        params = values.get("foray_localization", {})
+        ratio = as_number(params.get("observability_ratio_threshold", ""))
+        dofs = as_number(params.get("max_unobservable_dofs", ""))
+        if ratio is None or dofs is None or ratio <= 0.0:
+            continue
+        if dofs >= K_DOF_COUNT:
+            failures.append(
+                f"{config.name}: observability_ratio_threshold={ratio} 已启用方向约束，"
+                f"但 max_unobservable_dofs={dofs:g} ≥ {K_DOF_COUNT}（=全部自由度），"
+                "退化判据等于关闭（审计 L5 / decision.md D58）"
+            )
 
     if failures:
         for failure in failures:
