@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+    <name>diesel_localization_ros</name>
+    <version>0.1.0</version>
+    <description>L3 定位层 ROS 2 接口：定位状态、地图元信息、动态障碍、重定位服务与适配器。</description>
+    <maintainer email="ryanz@example.com">RyanZ</maintainer>
+    <license>TODO</license>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+    <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+    <depend>rclcpp</depend>
+    <depend>geometry_msgs</depend>
+    <depend>nav_msgs</depend>
+    <depend>sensor_msgs</depend>
+    <depend>std_msgs</depend>
+    <depend>builtin_interfaces</depend>
+    <depend>tf2_ros</depend>
+    <depend>tf2_geometry_msgs</depend>
+    <depend>eigen</depend>
+    <depend>diesel_localization_core</depend>
+    <depend>diesel_localization_map</depend>
+
+    <test_depend>ament_cmake_gtest</test_depend>
+
+    <member_of_group>rosidl_interface_packages</member_of_group>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
+</package>

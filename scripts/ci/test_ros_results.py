@@ -1,6 +1,6 @@
 """把 colcon test 写下的 gtest 结果汇总成可断言的覆盖清单。
 
-审计整改（`audit/tasks/02-foray_localization.md`）要求每条发现的验收用例都
+审计整改（`audit/tasks/02-diesel_localization.md`）要求每条发现的验收用例都
 「跑过并且全绿」。`colcon test` 只把结果留在 `build/<pkg>/test_results/` 下，
 而 CI 的 `build-ros2` 作业只看 colcon 自己的退出码——某个用例悄悄消失不会让它变红。
 这里把结果文件汇总成一份清单：总数、逐包明细，以及一组必须存在的用例名。
@@ -9,7 +9,7 @@
 
     python3 -m pytest scripts/ci/test_ros_results.py -q
 
-结果目录按顺序定位：环境变量 `FORAY_RESULTS_ROOT`、仓库根下的 `build/`、
+结果目录按顺序定位：环境变量 `DIESEL_RESULTS_ROOT`、仓库根下的 `build/`、
 以及从仓库根逐级向上的 `build/`（docker 里仓库挂在 `/ws/src/...`、构建在 `/ws/build`）。
 """
 
@@ -90,7 +90,7 @@ REQUIRED_CASES = {
     "UnmatchedPointsReportTheDocumentedResidual": "L17",
 }
 
-# L14 只在 PCL 后端编译进来时存在（`FORAY_WITH_PCL=ON`），因此单独断言。
+# L14 只在 PCL 后端编译进来时存在（`DIESEL_WITH_PCL=ON`），因此单独断言。
 PCL_CASES = {
     "TargetCacheInvalidatesWhenContentChanges": "L14",
     "OptionsTakeEffectAfterSetOptions": "L14",
@@ -100,7 +100,7 @@ PCL_CASES = {
 def _candidate_roots() -> list[Path]:
     """按优先级列出可能存放 gtest 结果的工作区根目录。"""
     candidates: list[Path] = []
-    override = os.environ.get("FORAY_RESULTS_ROOT")
+    override = os.environ.get("DIESEL_RESULTS_ROOT")
     if override:
         candidates.append(Path(override))
     repo_root = Path(__file__).resolve().parents[2]
@@ -165,7 +165,7 @@ def test_pcl_cases_present_when_pcl_results_exist(
 ) -> None:
     pcl_recorded = any("pcl_gicp" in name for name in results)
     if not pcl_recorded:
-        pytest.skip("本次构建没有 PCL 后端（FORAY_WITH_PCL=OFF），L14 用例不参与")
+        pytest.skip("本次构建没有 PCL 后端（DIESEL_WITH_PCL=OFF），L14 用例不参与")
     present = {case for cases in results.values() for case in cases}
     missing = sorted(name for name in PCL_CASES if name not in present)
     assert not missing, "缺少 L14 验收用例: " + ", ".join(missing)

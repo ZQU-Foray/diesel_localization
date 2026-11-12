@@ -29,21 +29,21 @@ import sys
 from pathlib import Path
 
 README = Path("README.md")
-CONFIG_DIR = Path("src/foray_localization_bringup/config")
+CONFIG_DIR = Path("src/diesel_localization_bringup/config")
 
 # README 表头括号里的节点名 → 该节点的源码文件。
-# 没有机械规则能从 `foray_localization` 推出 `localization_node.cpp`，所以显式列映射；
+# 没有机械规则能从 `diesel_localization` 推出 `localization_node.cpp`，所以显式列映射；
 # README 出现未登记的新节点名时直接报错，而不是悄悄漏检。
 NODE_SOURCES = {
-    "foray_localization": Path("src/foray_localization_ros/src/localization_node.cpp"),
-    "foray_map_server": Path("src/foray_localization_ros/src/map_server_node.cpp"),
+    "diesel_localization": Path("src/diesel_localization_ros/src/localization_node.cpp"),
+    "diesel_map_server": Path("src/diesel_localization_ros/src/map_server_node.cpp"),
 }
 
 # 由 launch 注入、允许不出现在兵种配置里的参数。
-# 来源：README「关键参数」段末注 + src/foray_localization_bringup/launch/localization.launch.py。
+# 来源：README「关键参数」段末注 + src/diesel_localization_bringup/launch/localization.launch.py。
 LAUNCH_INJECTED = frozenset({"map_manifest", "verify_map_hashes"})
 
-# 位姿自由度总数，与 `src/foray_localization_core/include/foray/localization_map/observability.hpp`
+# 位姿自由度总数，与 `src/diesel_localization_core/include/diesel/localization_map/observability.hpp`
 # 的 `kDofCount` 相同。本脚本只看 yaml，不解析 C++，所以这里按事实重述一次；
 # 两边漂移的后果是「判据悄悄失效」，因此改动时两处必须一起改（decision.md D58）。
 K_DOF_COUNT = 6
@@ -292,7 +292,7 @@ def main() -> int:
     # 语义断言：只要方向约束是开着的（threshold > 0），容忍数就必须小于全自由度。
     for config in configs:
         values = parse_config_values(config)
-        params = values.get("foray_localization", {})
+        params = values.get("diesel_localization", {})
         ratio = as_number(params.get("observability_ratio_threshold", ""))
         dofs = as_number(params.get("max_unobservable_dofs", ""))
         if ratio is None or dofs is None or ratio <= 0.0:
