@@ -169,6 +169,77 @@
     在 PCL ON 构建上 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed`；在
     `FORAY_RESULTS_ROOT=/ws/build-nopcl` 上 `17 个 / 117 个` + `2 passed, 1 skipped`（`decision.md` D55）。
 
+- [ ] **M11 联调缺陷整改 L1–L8**（2026-11-11 仿真联调复盘；设计与取舍见 `decision.md` D56–D59）
+  结论先说：A2 失败与 `ready=FAIL` 的根因都**不在配准算法**，在**帧契约与状态机表达**——
+  仿真链里没有 `body` 帧，定位节点一帧点云都吃不到；节点又把「吃不到帧」表达成永不结束的
+  `INITIALIZING`。补上帧之后 A2 仍掉锁，那是另一条独立成因（点数漏斗塌缩，见 i6）。
+  顺序：i1 解 `ready` → i2/i3 健康契约 → i4/i5 判据与口径可见性 → i6 精度 → i7 验收可读性 → i8 收口。
+  - [ ] **i1 L1/L2 仿真 `body` 帧契约**（跨仓：`foray_simulation`）：`point_lio` 硬编码
+    `body`（`laserMapping.cpp:228` 点云帧、`:270` 里程计子帧），而
+    `localization_sim.launch.py` 只发了 `base_footprint→front_mid360`。修法：launch 增一条
+    `base_footprint→body` 恒等静态 TF（**父 = `base_footprint`，方向不可反**，D56）。
+    已验证的一条：`point_lio` 自己也广播 TF（`laserMapping.cpp:280-292`，受 `publish.tf_send_en`
+    控制、默认 `true`），但发的是 `camera_init → aft_mapped`，**不是 `body`**——`body` 只作为
+    odom 的 `child_frame_id`（`:270`）与点云 header（`:228`）出现，TF 树里根本没有它。所以补
+    这一条不会给任何 frame 造出第二个父；`camera_init → aft_mapped` 是一对孤立的两节点树，
+    没有订阅者跨树查询就无害。实车链**不是**「本来就有」：`point_lio` 从不发布 `body` 的 TF，
+    实车同样缺这条父级（只是还没人在实车上跑过定位），谁补要在实车 launch 里落实。
+    断言：仿真仓加静态用例「launch 里存在 `base_footprint→body`」；验收：`accept.py ready`
+    由 `FAIL` 转 `PASS`（手工补帧实测 `ready_delay_s=1.51`）。
+  - [ ] **i2 L3 TF 缺失要进状态机、要带 reason**（本仓）：`lookup_base_from()`
+    （`localization_node.cpp:302-322`）失败只 `WARN_THROTTLE` 后 `return`，两个回调都在
+    「设 `has_cloud_`/`has_odom_` 之前」早退（`:354-360`、`:400-411`）；而 `publish_state()`
+    （`:670-741`）四支成因全部要求「至少收到过里程计或点云」，于是一条都不命中，状态冻在
+    `INITIALIZING`。修法：节点侧留一条 TF 失败记录（`child` / tf2 原文 / 时刻 / 次数），
+    `publish_state()` 增一支「TF 缺失」→ `enter_lost("tf unavailable: <base>←<child>: <detail>")`；
+    其余分支在 TF 失败未消除时把同一条成因追加进 reason。`LocalizationState` **不动**：
+    `reason` 是既存字段（`msg/LocalizationState.msg:35-36`），`state_name` 也不加——下游本来就
+    按常量映射名字，同一事实存两份正是 `AGENTS.md` 点名要防的分叉。README 同步补两句：
+    `### TF` 表里点云帧那一层由上游给（本仓只发布 `map → odom`），以及「查不到就丢帧、并按
+    TF 缺失报 `LOST`」——本仓需求文档现在只有 `odom → lidar` / `base_footprint → lidar`，
+    缺的正是 `body` 这一条前提。验收：节点用例改「不发 TF」
+    → `state=LOST` 且 reason 含 `tf unavailable`（现基线停在 `INITIALIZING`，红 → 绿）。
+  - [ ] **i3 L4 启动期 `LOST` 可自恢复**（本仓）：`health.cpp:172-176` 一进 `LOST` 就不再
+    看样本，`reset()` 是唯一出口；而启动期 TF 晚到几秒就够判 `LOST`（`:241-245`），帧全到位后
+    也回不来（实测 `last_state=LOST` 直到超时）。修法：区分「从未成功过」与「成功过又丢」——
+    前者按 `warmup_frames` 连续好帧自恢复（reason 写明是启动期恢复），后者保持粘滞、只能走
+    `Relocalize`（D57）。验收：`test_health` 增两条（启动期 `LOST` → 3 好帧 → `OK`；
+    `OK` 过之后 `LOST` → 3 好帧 → 仍 `LOST`）。
+  - [ ] **i4 L5 退化判据必须真判**（本仓）：`max_unobservable_dofs` 默认 6 = `kDofCount`
+    （`observability.hpp:30`），`health.cpp:189-190` 的比较恒真，`sentry.yaml:42` 又显式写 6，
+    于是「6/6 全不可观」也算 `observable_ok`；实测 5/6 不可观、condition 1e10 仍报 `OK`，
+    位姿靠方向冻结继续输出。修法：`sentry.yaml` → `max_unobservable_dofs: 3`、
+    `min_source_points: 100`（64–70 点的帧不许静默进配准）；步兵/重装两份配置保留 6 但注明
+    「方向约束未启用」；节点启动打一行有效判据；`check_params.py` 增语义断言
+    「`observability_ratio_threshold > 0` ⇒ `max_unobservable_dofs < 6`」，防下一份配置再把它
+    关掉（D58）。**默认值不动**（仍 6 = 不启用），参数表与 `param-contract` 的数值不受影响。
+  - [ ] **i5 L6 两套超时口径要能分辨**（本仓 + 跨仓）：`sentry.yaml:32-34` 是 1.0/0.5/0.2，
+    `localization_sim.launch.py` 覆盖成 5.0/2.0/2.5（各有实测依据）。数值不改，改**可见性**：
+    节点启动打一行「lost / odom / lidar 时限 + 来源」；仿真仓把三个覆盖值提成
+    `DeclareLaunchArgument`（默认仍 2.0/2.5/5.0），复现实车口径不必改代码；参数表加脚注
+    说明仿真链路由 `foray_simulation` 覆盖（D59）。
+  - [ ] **i6 L7 A2 掉锁的真因：先测量再改**（本仓 + 跨仓）：两条嫌疑已排除——
+    **出生点不在图外**：先验图 `rmul_2027.pcd` 102433 点，`x∈[-0.30,12.30]`、`y∈[-0.30,8.30]`、
+    `z∈[-0.10,0.40]`，spawn `(6.0,4.0)` 在场心，10 m 内 102433 点、3 m 内 26594 点、前向 30°
+    楔形内 10036 点；**裁切逻辑没写错**：`crop_by_fov`（`point_cloud.cpp:83-131`）就是
+    「相对中心 ±半个开口角」，四条单位测试覆盖。剩下的嫌疑全在点数漏斗：`/livox/lidar`
+    （gz 1875×32 全 360°）→ `ign_sim_pointcloud_tool` 按环重排（`n_scan=32`、
+    `ang_res_y=1.903225806451613`、`ang_bottom=7.0`，该工具会丢 row_id 越界的回波）→
+    `to_point_cloud` → `crop_by_fov` 30° → `voxel` 0.10 m。修法：`profile_enabled` 那行扩成点数漏斗
+    （raw / crop 后 / voxel 后 / 配准 source、target），**不新增参数**；仿真口径把
+    `fov_horizontal_deg` 覆盖成 `360.0`（gz 雷达全视场，与实车 Livox 稀疏扫描不是一回事，D59）。
+    验收：`accept.py a2` 的 `source` 回到四位数、`lost=0`、`verdict=PASS`；拿到漏斗数据前
+    **不动** `voxel_leaf_m`：`align_max_correspondence_m: 0.5` 约等于 2× 地图体素 0.25 m，本身合理。
+  - [ ] **i7 L8 验收脚本带 reason**（跨仓：`foray_simulation`）：`accept.py:124-133` 只存
+    `last_state` 名字，`:223/:275/:301` 也只打这一项，于是「为什么 LOST」得回翻定位节点日志。
+    修法：`_on_state` 连 `msg.reason` 一起存，`ready`/`a2`/`a3` 输出 `state_reason`。
+  - [ ] **i8 验证与回执**：容器 `foray_sim:humble-fortress` 内 `FORAY_WITH_PCL=ON` / `OFF` 两轮
+    `colcon test`（本仓现口径 145 / 138，新增用例计入）；`scripts/ci/test_ros_results.py`
+    的名字清单同步登记新用例；四道门禁 + 仿真仓 `accept.py ready` / `a2` 回执贴进本条。
+    本轮只动文档，静态门禁已跑：`check_style` / `check_tree_doc`（104 文件、24 目录）/
+    `check_params`（2 节点、43 参数、3 份配置）/ `check_contracts`（5 个接口文件）全 exit 0——
+    文档不是实现回执，实现要到 i1–i7 各自落地时补齐。
+
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 
 ## 当前 Agent State
