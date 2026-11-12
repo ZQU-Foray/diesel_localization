@@ -76,15 +76,20 @@ class HealthMonitor {
     HealthStatus update(const RegistrationSample& sample, Timestamp now_ns, Timestamp last_odom_ns,
                         double odom_backlog_sec = 0.0);
 
-    /// 显式进入 LOST，幂等。用于没有配准帧可喂的失效（地图没加载成功等）：
+    /// 显式进入 LOST，幂等。用于没有配准帧可喂的失效（地图没加载成功、TF 查不到等）：
     /// 这类故障在 update() 里永远进不来，健康状态会永久停在 INITIALIZING。
+    /// 若此时还没成功过（`ever_ok() == false`），一旦合格帧开始到来，update() 会按
+    /// `warmup_frames` 自恢复——否则「启动瞬间就缺件」会变成永久失锁（decision.md D57）。
     HealthStatus enter_lost(const std::string& reason, Timestamp now_ns);
 
     /// 显式重定位：回到 INITIALIZING，清空去抖计数。
+    /// 同时清掉 `ever_ok_`：重定位是一次新的启动，新的启动期同样允许自恢复（decision.md D57）。
     void reset();
 
     const HealthConfig& config() const { return config_; }
     HealthState state() const { return state_; }
+    /// 是否成功进入过 OK。`false` 表示这个监视器还处在「启动期」。
+    bool ever_ok() const { return ever_ok_; }
 
   private:
     void transition(HealthState next, const std::string& reason, Timestamp now_ns);
@@ -98,6 +103,11 @@ class HealthMonitor {
     Timestamp last_valid_ns_{0};
     Timestamp first_bad_ns_{0};
     int good_frames_{0};
+    /// 是否曾经进入过 OK。它把两种 LOST 分开（decision.md D57）：
+    /// 从未成功过 = 缺的是「还没跑起来」（TF 晚到、点云晚到、地图晚加载），
+    /// 允许按 `warmup_frames` 连续好帧自恢复；成功过又丢 = 真的跑丢了，只能显式 Relocalize。
+    /// 旧行为是一律粘滞，于是启动早期几秒的缺帧会变成永久失锁。
+    bool ever_ok_{false};
     double last_confidence_{0.0};
     std::string reason_{"waiting for first registration"};
 };

@@ -145,6 +145,15 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `map → odom` | `foray_localization_ros` | 20 Hz |
 | `odom → lidar` | `point_lio` | 100–200 Hz |
 | `base_footprint → lidar` | URDF / `robot_state_publisher`（静态） | — |
+| `base_footprint → <里程计 child_frame>` | 本体侧（URDF 静态或仿真链） | — |
+
+**`base_footprint → <child_frame>` 这一层不是可选项。** 本仓按 D37 把 `/aft_mapped_to_init`
+的 `pose` 当「`odom → child_frame_id`」用，`child_frame_id` 由上游决定（`point_lio` 硬编码
+`body`，见其 `laserMapping.cpp:228` 与 `:270`），与本仓的 `base_frame` 往往不是同一个名字；
+该层缺失时每一帧点云都在 `lookup_base_from()` 失败后被丢弃，状态机永远停在
+`INITIALIZING`，而 `point_lio` 的 `body → camera_init` 那条 TF 树与 `odom` 树不连通，补不上这层。
+补帧方向只能是 `base_footprint → body`：反成 `body → base_footprint` 会让
+`base_footprint` 出现两个父（`odom` 与本层），tf2 直接断树（审计 L2）。
 
 ### 关键参数
 

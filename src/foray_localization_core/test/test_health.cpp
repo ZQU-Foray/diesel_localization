@@ -135,7 +135,7 @@ TEST(HealthMonitor, SmallBacklogDoesNotChangeTheReason) {
     EXPECT_EQ(status.reason, "odometry stale: 0.800s (no samples)");
 }
 
-TEST(HealthMonitor, EnterLostIsIdempotentAndSticky) {
+TEST(HealthMonitor, EnterLostKeepsTheFirstReason) {
     HealthMonitor monitor(test_config());
     const Timestamp start = kSecond;
     EXPECT_EQ(monitor.update(make_sample(start), start, start).state, HealthState::kInitializing);
@@ -150,12 +150,45 @@ TEST(HealthMonitor, EnterLostIsIdempotentAndSticky) {
     const HealthStatus again = monitor.enter_lost("another reason", start + kSecond / 10);
     EXPECT_EQ(again.state, HealthState::kLost);
     EXPECT_EQ(again.reason, "map unavailable: manifest missing");
+}
 
-    // LOST 粘滞：即使随后喂进合格样本，也只能靠 reset() 恢复。
-    EXPECT_EQ(
-        monitor.update(make_sample(start + kSecond / 5), start + kSecond / 5, start + kSecond / 5)
-            .state,
-        HealthState::kLost);
+TEST(HealthMonitor, LostBeforeFirstSuccessRecoversFromStartup) {
+    HealthMonitor monitor(test_config());
+    const Timestamp start = kSecond;
+    // 启动早期 TF 查不到，一帧配准都喂不进来，于是被显式判成 LOST（L3/L4 的现场形态）。
+    monitor.enter_lost("tf unavailable: base_footprint<-body", start);
+    EXPECT_FALSE(monitor.ever_ok());
+
+    // TF 补上、合格帧开始到来：连续 warmup_frames(2) 帧就自恢复，
+    // 而不是像旧行为那样一直冻在 LOST 直到有人手工 reset（decision.md D57）。
+    const Timestamp first = start + kSecond / 5;
+    EXPECT_EQ(monitor.update(make_sample(first), first, first).state, HealthState::kLost);
+
+    const Timestamp second = start + 2 * kSecond / 5;
+    const HealthStatus recovered = monitor.update(make_sample(second), second, second);
+    EXPECT_EQ(recovered.state, HealthState::kOk);
+    EXPECT_EQ(recovered.reason, "recovered during startup");
+    EXPECT_TRUE(monitor.ever_ok());
+}
+
+TEST(HealthMonitor, EnterLostIsStickyAfterFirstSuccess) {
+    HealthMonitor monitor(test_config());
+    const Timestamp start = kSecond;
+    // 先正常跑起来（warmup_frames=2）。
+    monitor.update(make_sample(start), start, start);
+    const Timestamp warm = start + kSecond / 5;
+    EXPECT_EQ(monitor.update(make_sample(warm), warm, warm).state, HealthState::kOk);
+    ASSERT_TRUE(monitor.ever_ok());
+
+    // 成功过之后再丢，就不是启动期问题了：合格样本不许把它拉回来，只能 reset()。
+    monitor.enter_lost("map unavailable: manifest missing", start + 2 * kSecond / 5);
+    const Timestamp now = start + 3 * kSecond / 5;
+    EXPECT_EQ(monitor.update(make_sample(now), now, now).state, HealthState::kLost);
+
+    const Timestamp later = now + kSecond / 5;
+    const HealthStatus status = monitor.update(make_sample(later), later, later);
+    EXPECT_EQ(status.state, HealthState::kLost);
+    EXPECT_DOUBLE_EQ(status.confidence, 0.0);
 }
 
 TEST(HealthMonitor, SmallTimestampInversionIsTolerated) {

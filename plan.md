@@ -174,7 +174,31 @@
   仿真链里没有 `body` 帧，定位节点一帧点云都吃不到；节点又把「吃不到帧」表达成永不结束的
   `INITIALIZING`。补上帧之后 A2 仍掉锁，那是另一条独立成因（点数漏斗塌缩，见 i6）。
   顺序：i1 解 `ready` → i2/i3 健康契约 → i4/i5 判据与口径可见性 → i6 精度 → i7 验收可读性 → i8 收口。
-  - [ ] **i1 L1/L2 仿真 `body` 帧契约**（跨仓：`foray_simulation`）：`point_lio` 硬编码
+  **进度（2026-11-11，宿主直接部署 ROS 2 humble，两个 colcon 空间 `foray_sim_ws` +
+  `foray_simulation`）**：i1–i8 全部落地并提交（仿真仓 `fix/m11-body-tf`，本仓
+  `fix/m11-health-contract`）；下列回执取自**已提交**的二进制。PR：本仓 #9（文档 → `dev`）、
+  #10（实现 → `dev`，堆叠在 #9 之上以便工作流触发，先合 #9 则 #10 只剩代码差异）；
+  仿真仓 #6（→ `dev`）。三份 PR 的 CI 全绿（本仓 10 项：含 build-ros2 / build-nopcl 的
+  `colcon test`；仿真仓 8 项），`MERGEABLE`，等评审。
+  回执五（终验，ROS_DOMAIN_ID=66，判据修正后的最终代码）：`ready=PASS ready_delay_s=0.93
+  lidar_s=0.13 localization_s=0.93 bt_navigator=active controller_server=active
+  last_state=OK state_reason="warmup complete"`；`a2 samples=8336 max_xy_err=0.039
+  max_yaw=0.154 lost=0 verdict=PASS`；漏斗 `raw=18818 crop=18818 voxel=3197
+  align_source=1697 align_target=4137`；`tf unavailable` 0 条、LOST 0 条（正向链路无
+  误报）。
+  回执一（整链就绪，`navigation_sim.launch.py headless:=true`）：
+  `ready=PASS ready_delay_s=21.09 lidar_s=0.71 localization_s=1.05 bt_navigator=active
+  controller_server=active last_state=OK state_reason="warmup complete"`；`tf2_echo
+  base_footprint body` → `Translation: [0.000, 0.000, 0.000]`、四元数 `(0,0,0,1)`。
+  回执二（`profile_enabled:=true`）：`点数漏斗: raw=18491 crop=18491 voxel=3141
+  align_source=1695 align_target=4137`，全程无「配准无有效对应」，退化从 5/6
+  （condition≈1.0e10）降到 2/6（condition≈3.3e3）。
+  回执三（A2）：`samples=14394 first_ok_delay=0.00 max_xy_err=0.035 max_yaw=0.139
+  last_state=OK lost=0 verdict=PASS`——对照整改前 `samples=4161 max_xy_err=0.076
+  lost=5571 verdict=FAIL`。
+  回执四：`colcon test --packages-select foray_localization_core` → 5/5 通过，
+  `test_health.xml` 的 `HealthMonitor` 12 例（含 i3 新增两例）全绿。
+  - [x] **i1 L1/L2 仿真 `body` 帧契约**（跨仓：`foray_simulation`）：`point_lio` 硬编码
     `body`（`laserMapping.cpp:228` 点云帧、`:270` 里程计子帧），而
     `localization_sim.launch.py` 只发了 `base_footprint→front_mid360`。修法：launch 增一条
     `base_footprint→body` 恒等静态 TF（**父 = `base_footprint`，方向不可反**，D56）。
@@ -186,7 +210,7 @@
     实车同样缺这条父级（只是还没人在实车上跑过定位），谁补要在实车 launch 里落实。
     断言：仿真仓加静态用例「launch 里存在 `base_footprint→body`」；验收：`accept.py ready`
     由 `FAIL` 转 `PASS`（手工补帧实测 `ready_delay_s=1.51`）。
-  - [ ] **i2 L3 TF 缺失要进状态机、要带 reason**（本仓）：`lookup_base_from()`
+  - [x] **i2 L3 TF 缺失要进状态机、要带 reason**（本仓）：`lookup_base_from()`
     （`localization_node.cpp:302-322`）失败只 `WARN_THROTTLE` 后 `return`，两个回调都在
     「设 `has_cloud_`/`has_odom_` 之前」早退（`:354-360`、`:400-411`）；而 `publish_state()`
     （`:670-741`）四支成因全部要求「至少收到过里程计或点云」，于是一条都不命中，状态冻在
@@ -199,13 +223,19 @@
     TF 缺失报 `LOST`」——本仓需求文档现在只有 `odom → lidar` / `base_footprint → lidar`，
     缺的正是 `body` 这一条前提。验收：节点用例改「不发 TF」
     → `state=LOST` 且 reason 含 `tf unavailable`（现基线停在 `INITIALIZING`，红 → 绿）。
-  - [ ] **i3 L4 启动期 `LOST` 可自恢复**（本仓）：`health.cpp:172-176` 一进 `LOST` 就不再
+    回执：仿真仓 `body_tf:=false` 故障注入后 `state: 3`、
+    `reason: 'tf unavailable: base_footprint<-body: "body" passed to lookupTransform argument
+    source_frame does not exist.'`，`accept.py ready` → `last_state=LOST
+    state_reason="tf unavailable: ..."`；对照整改前同一注入下 `last_state=INITIALIZING`。
+    实现细节修正一处：判据只看「此刻 TF 是否通」，不看 `has_odom_`——里程计照常到时按
+    激光断流报会把排查方向指错（D60）。
+  - [x] **i3 L4 启动期 `LOST` 可自恢复**（本仓）：`health.cpp:172-176` 一进 `LOST` 就不再
     看样本，`reset()` 是唯一出口；而启动期 TF 晚到几秒就够判 `LOST`（`:241-245`），帧全到位后
     也回不来（实测 `last_state=LOST` 直到超时）。修法：区分「从未成功过」与「成功过又丢」——
     前者按 `warmup_frames` 连续好帧自恢复（reason 写明是启动期恢复），后者保持粘滞、只能走
     `Relocalize`（D57）。验收：`test_health` 增两条（启动期 `LOST` → 3 好帧 → `OK`；
     `OK` 过之后 `LOST` → 3 好帧 → 仍 `LOST`）。
-  - [ ] **i4 L5 退化判据必须真判**（本仓）：`max_unobservable_dofs` 默认 6 = `kDofCount`
+  - [x] **i4 L5 退化判据必须真判**（本仓）：`max_unobservable_dofs` 默认 6 = `kDofCount`
     （`observability.hpp:30`），`health.cpp:189-190` 的比较恒真，`sentry.yaml:42` 又显式写 6，
     于是「6/6 全不可观」也算 `observable_ok`；实测 5/6 不可观、condition 1e10 仍报 `OK`，
     位姿靠方向冻结继续输出。修法：`sentry.yaml` → `max_unobservable_dofs: 3`、
@@ -213,12 +243,12 @@
     「方向约束未启用」；节点启动打一行有效判据；`check_params.py` 增语义断言
     「`observability_ratio_threshold > 0` ⇒ `max_unobservable_dofs < 6`」，防下一份配置再把它
     关掉（D58）。**默认值不动**（仍 6 = 不启用），参数表与 `param-contract` 的数值不受影响。
-  - [ ] **i5 L6 两套超时口径要能分辨**（本仓 + 跨仓）：`sentry.yaml:32-34` 是 1.0/0.5/0.2，
+  - [x] **i5 L6 两套超时口径要能分辨**（本仓 + 跨仓）：`sentry.yaml:32-34` 是 1.0/0.5/0.2，
     `localization_sim.launch.py` 覆盖成 5.0/2.0/2.5（各有实测依据）。数值不改，改**可见性**：
     节点启动打一行「lost / odom / lidar 时限 + 来源」；仿真仓把三个覆盖值提成
     `DeclareLaunchArgument`（默认仍 2.0/2.5/5.0），复现实车口径不必改代码；参数表加脚注
     说明仿真链路由 `foray_simulation` 覆盖（D59）。
-  - [ ] **i6 L7 A2 掉锁的真因：先测量再改**（本仓 + 跨仓）：两条嫌疑已排除——
+  - [x] **i6 L7 A2 掉锁的真因：先测量再改**（本仓 + 跨仓）：两条嫌疑已排除——
     **出生点不在图外**：先验图 `rmul_2027.pcd` 102433 点，`x∈[-0.30,12.30]`、`y∈[-0.30,8.30]`、
     `z∈[-0.10,0.40]`，spawn `(6.0,4.0)` 在场心，10 m 内 102433 点、3 m 内 26594 点、前向 30°
     楔形内 10036 点；**裁切逻辑没写错**：`crop_by_fov`（`point_cloud.cpp:83-131`）就是
@@ -230,15 +260,20 @@
     `fov_horizontal_deg` 覆盖成 `360.0`（gz 雷达全视场，与实车 Livox 稀疏扫描不是一回事，D59）。
     验收：`accept.py a2` 的 `source` 回到四位数、`lost=0`、`verdict=PASS`；拿到漏斗数据前
     **不动** `voxel_leaf_m`：`align_max_correspondence_m: 0.5` 约等于 2× 地图体素 0.25 m，本身合理。
-  - [ ] **i7 L8 验收脚本带 reason**（跨仓：`foray_simulation`）：`accept.py:124-133` 只存
+  - [x] **i7 L8 验收脚本带 reason**（跨仓：`foray_simulation`）：`accept.py:124-133` 只存
     `last_state` 名字，`:223/:275/:301` 也只打这一项，于是「为什么 LOST」得回翻定位节点日志。
     修法：`_on_state` 连 `msg.reason` 一起存，`ready`/`a2`/`a3` 输出 `state_reason`。
-  - [ ] **i8 验证与回执**：容器 `foray_sim:humble-fortress` 内 `FORAY_WITH_PCL=ON` / `OFF` 两轮
+  - [x] **i8 验证与回执**：容器 `foray_sim:humble-fortress` 内 `FORAY_WITH_PCL=ON` / `OFF` 两轮
     `colcon test`（本仓现口径 145 / 138，新增用例计入）；`scripts/ci/test_ros_results.py`
     的名字清单同步登记新用例；四道门禁 + 仿真仓 `accept.py ready` / `a2` 回执贴进本条。
-    本轮只动文档，静态门禁已跑：`check_style` / `check_tree_doc`（104 文件、24 目录）/
-    `check_params`（2 节点、43 参数、3 份配置）/ `check_contracts`（5 个接口文件）全 exit 0——
-    文档不是实现回执，实现要到 i1–i7 各自落地时补齐。
+    回执（2026-11-11 宿主直跑，取代容器口径）：`colcon test --base-paths src/foray_localization`
+    → ON 143 例、`--build-base build-nopcl -DFORAY_WITH_PCL=OFF` → OFF 119 例（含新增用例）。
+    两轮都只剩 `test_localization_node` 的两条实时性断言（`max_odom_lag_sec < 0.05`）在宿主
+    负载 ~12 时超线（60 ms / 83 ms）；**基线对照**：`git stash` 后同一份 dev 代码在同一负载下
+    同样失败这 2 例，单独运行（负载回落）则两条全绿（35.2 ms / 40.7 ms）⇒ 属宿主机负载敏感的
+    既有用例，不是本轮改动引入，容器 CI 口径不受影响。`test_ros_results.py` 已登记 i3 的三例。
+    四道门禁：`check_style` / `check_tree_doc`（104 文件、24 目录）/ `check_params`
+    （2 节点、43 参数、3 份配置）/ `check_contracts`（5 个接口文件）全 exit 0。
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
 

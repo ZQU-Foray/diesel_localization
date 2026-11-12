@@ -109,6 +109,7 @@ void HealthMonitor::reset() {
     last_valid_ns_ = 0;
     first_bad_ns_ = 0;
     good_frames_ = 0;
+    ever_ok_ = false;
     reason_ = "waiting for first registration after reset";
 }
 
@@ -116,6 +117,9 @@ void HealthMonitor::transition(HealthState next, const std::string& reason, Time
     state_ = next;
     state_since_ns_ = now_ns;
     reason_ = reason;
+    if (next == HealthState::kOk) {
+        ever_ok_ = true;
+    }
     if (next != HealthState::kDegraded) {
         first_bad_ns_ = 0;
     }
@@ -150,6 +154,42 @@ HealthStatus HealthMonitor::snapshot(Timestamp now_ns) const {
     return status;
 }
 
+namespace {
+
+/// 一帧样本的质量判据（decision.md D23）：只算结论、不改状态，
+/// 让「启动期自恢复」与「稳态判定」共用同一套阈值，改一处不会两边漂移（D57）。
+struct SampleQuality {
+    /// 样本是否带可测的配准质量。不带的只剩「新鲜」这一条判据（D38）。
+    bool quality_known{false};
+    bool points_ok{true};
+    bool observable_ok{true};
+    bool good{true};
+    bool degraded_ok{true};
+};
+
+SampleQuality evaluate_quality(const RegistrationSample& sample, const HealthConfig& config) {
+    SampleQuality quality;
+    quality.quality_known = sample.has_registration_quality;
+
+    if (!quality.quality_known) {
+        return quality;
+    }
+
+    // 点数与可观性是「残差/IPR 之外」的两条独立降级理由（D23）：残差小只说明对上的点贴得紧，
+    // 不说明这些点在几何上约束住了 6 个自由度。
+    quality.points_ok =
+        config.min_source_points == 0 || sample.source_points >= config.min_source_points;
+    quality.observable_ok = sample.unobservable_count <= config.max_unobservable_dofs;
+    quality.good = sample.mean_residual_m <= config.ok_mean_residual_m &&
+                   sample.inlier_ratio >= config.ok_inlier_ratio && quality.points_ok &&
+                   quality.observable_ok;
+    quality.degraded_ok = sample.mean_residual_m <= config.degraded_mean_residual_m &&
+                          sample.inlier_ratio >= config.degraded_inlier_ratio;
+    return quality;
+}
+
+} // namespace
+
 HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp now_ns,
                                    Timestamp last_odom_ns, double odom_backlog_sec) {
     if (start_ns_ == 0) {
@@ -169,31 +209,40 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
         return snapshot(now_ns);
     }
 
-    // LOST 只能由显式 Relocalize（reset）恢复；期间不接受“看起来正常”的样本。
+    // LOST 分两档（decision.md D57）：
+    //   从未成功过 → 缺的是「还没跑起来」（TF 晚到、点云晚到、地图晚加载），
+    //                连续 warmup_frames 帧合格配准就自恢复；
+    //   成功过又丢   → 真的跑丢了，保持粘滞，只能由显式 Relocalize（reset）恢复。
+    // 旧行为是一律粘滞，于是启动早期几秒的缺帧会变成永久失锁（实测 last_state=LOST 直到超时）。
     if (state_ == HealthState::kLost) {
-        last_confidence_ = 0.0;
+        if (ever_ok_) {
+            last_confidence_ = 0.0;
+            return snapshot(now_ns);
+        }
+
+        const bool valid = sample.valid && sample.stamp_ns > 0;
+        const SampleQuality quality = evaluate_quality(sample, config_);
+
+        if (valid && quality.good) {
+            last_valid_ns_ = std::max(last_valid_ns_, sample.stamp_ns);
+            ++good_frames_;
+
+            if (good_frames_ >= config_.warmup_frames) {
+                transition(HealthState::kOk, "recovered during startup", now_ns);
+            }
+        } else {
+            good_frames_ = 0;
+        }
+
+        last_confidence_ = compute_confidence(sample);
         return snapshot(now_ns);
     }
 
     const bool valid = sample.valid && sample.stamp_ns > 0;
     if (valid) {
         last_valid_ns_ = std::max(last_valid_ns_, sample.stamp_ns);
-        // 点数与可观性是「残差/IPR 之外」的两条独立降级理由（decision.md D23）：
-        // 残差小只说明对上的点贴得紧，不说明这些点在几何上约束住了 6 个自由度。
-        // 不带配准质量的位姿源（外部位姿）：只剩「新鲜」这一条判据，质量判据一律不参与。
-        // 这不是放宽，而是承认「本样本没有可测的质量」——父提交的做法是把 inlier_ratio
-        // 硬写成 1.0，等于伪造一份满分质检报告（D38）。
-        const bool quality_known = sample.has_registration_quality;
-        const bool points_ok = !quality_known || config_.min_source_points == 0 ||
-                               sample.source_points >= config_.min_source_points;
-        const bool observable_ok =
-            !quality_known || sample.unobservable_count <= config_.max_unobservable_dofs;
-        const bool good = !quality_known || (sample.mean_residual_m <= config_.ok_mean_residual_m &&
-                                             sample.inlier_ratio >= config_.ok_inlier_ratio &&
-                                             points_ok && observable_ok);
-        const bool degraded_ok =
-            !quality_known || (sample.mean_residual_m <= config_.degraded_mean_residual_m &&
-                               sample.inlier_ratio >= config_.degraded_inlier_ratio);
+        const SampleQuality quality = evaluate_quality(sample, config_);
+        const bool good = quality.good;
 
         if (good) {
             ++good_frames_;
@@ -215,20 +264,22 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
         } else if (state_ == HealthState::kOk) {
             if (!good) {
                 const double bad_age = age_seconds(now_ns, first_bad_ns_);
-                if (!degraded_ok && std::isfinite(bad_age) && bad_age >= config_.lost_timeout_sec) {
+                if (!quality.degraded_ok && std::isfinite(bad_age) &&
+                    bad_age >= config_.lost_timeout_sec) {
                     transition(HealthState::kLost, "registration quality lost", now_ns);
                 } else if (bad_age >= config_.degraded_hold_sec) {
                     // 降级理由要能直接指向原因：现场只看到「degraded」是排查不了的。
-                    const char* why = !points_ok       ? "insufficient source points"
-                                      : !observable_ok ? "insufficient observability"
-                                                       : "residual or inlier ratio out of bounds";
+                    const char* why = !quality.points_ok ? "insufficient source points"
+                                      : !quality.observable_ok
+                                          ? "insufficient observability"
+                                          : "residual or inlier ratio out of bounds";
                     transition(HealthState::kDegraded, why, now_ns);
                 }
             }
         } else if (state_ == HealthState::kDegraded) {
             if (good_frames_ >= config_.recover_frames) {
                 transition(HealthState::kOk, "registration recovered", now_ns);
-            } else if (!degraded_ok && first_bad_ns_ != 0 &&
+            } else if (!quality.degraded_ok && first_bad_ns_ != 0 &&
                        age_seconds(now_ns, first_bad_ns_) >= config_.lost_timeout_sec) {
                 transition(HealthState::kLost, "registration quality lost", now_ns);
             }

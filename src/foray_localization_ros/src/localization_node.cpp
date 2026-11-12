@@ -115,6 +115,20 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     observability_ratio_threshold_ =
         declare_parameter<double>("observability_ratio_threshold", 0.0);
     profile_enabled_ = declare_parameter<bool>("profile_enabled", false);
+    // 有效时限与判据一次打全（审计 L6 / L5 / decision.md D59）：同一套代码在
+    // `sentry.yaml` 与仿真 launch 里有两套阈值（1.0/0.5/0.2 与 5.0/2.0/2.5），
+    // 现场对着日志吵架时最容易把「时限不同」误判成「算法不同」。
+    // 这里打印的是参数合并后的**最终值**，不是 README 默认值。
+    RCLCPP_INFO(get_logger(), "有效时限: odom=%.2fs lidar=%.2fs lost=%.2fs 启动=%d 帧 恢复=%d 帧",
+                health_config_.odom_timeout_sec, health_config_.lidar_timeout_sec,
+                health_config_.lost_timeout_sec, health_config_.warmup_frames,
+                health_config_.recover_frames);
+    RCLCPP_INFO(get_logger(),
+                "有效判据: fov=%.1fx%.1f° voxel=%.2fm min_source_points=%zu "
+                "max_unobservable_dofs=%d observability_ratio=%.3f",
+                fov_horizontal_deg_, fov_vertical_deg_, voxel_leaf_m_,
+                health_config_.min_source_points, health_config_.max_unobservable_dofs,
+                observability_ratio_threshold_);
     // 后端由编译期开关决定（decision.md D21）。启动时把实际后端打出来，
     // 免得出现「文档说 GICP、实际跑 ICP」这种只能在事后靠精度异常才发现的情况。
     // 注入后端只用于离线回放与节点级测试，日志必须明说，否则现场会误判成默认后端。
@@ -313,10 +327,18 @@ bool LocalizationNode::lookup_base_from(const std::string& child_frame, const rc
         }
         base_from_child->translation() =
             Eigen::Vector3d(stamped.translation.x, stamped.translation.y, stamped.translation.z);
+        std::lock_guard<std::mutex> lock(tf_error_mutex_);
+        tf_error_.clear();
         return true;
     } catch (const tf2::TransformException& exception) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "TF %s->%s 失败: %s",
                              child_frame.c_str(), base_frame_.c_str(), exception.what());
+        // 这条失败必须能被 `publish_state()` 看见：否则丢帧只在日志里留一句 WARN，
+        // 消息层的 reason 永远是空的（审计 L3/L8）。
+        {
+            std::lock_guard<std::mutex> lock(tf_error_mutex_);
+            tf_error_ = base_frame_ + "<-" + child_frame + ": " + exception.what();
+        }
         return false;
     }
 }
@@ -325,6 +347,7 @@ void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstShared
     std::string error;
     const auto profile_begin = std::chrono::steady_clock::now();
     foray::localization_map::PointCloud points = to_point_cloud(*cloud, &error);
+    const std::size_t raw_points = points.size();
     if (points.empty()) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "丢弃无效点云: %s", error.c_str());
         return;
@@ -343,12 +366,17 @@ void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstShared
     if (profile_enabled_) {
         profile_.to_pcl_ms += elapsed_ms(profile_begin);
     }
+    const std::size_t crop_points = points.size();
     const auto profile_voxel_begin = std::chrono::steady_clock::now();
     if (voxel_leaf_m_ > 0.0) {
         points = foray::localization_map::voxel_downsample(points, voxel_leaf_m_);
     }
     if (profile_enabled_) {
         profile_.voxel_ms += elapsed_ms(profile_voxel_begin);
+        // 漏斗只记数不改行为：三个点数是同一帧的连续快照，加起来才能看出「点是在哪一步没的」。
+        profile_.raw_points += static_cast<double>(raw_points);
+        profile_.crop_points += static_cast<double>(crop_points);
+        profile_.voxel_points += static_cast<double>(points.size());
     }
 
     Eigen::Isometry3d base_from_cloud = Eigen::Isometry3d::Identity();
@@ -521,6 +549,12 @@ void LocalizationNode::maybe_flush_profile(std::int64_t now_ns) {
                 "耗时窗口: to_pcl=%.2fms voxel=%.2fms align=%.2fms 帧数=%.0f 配准率=%.1fHz",
                 profile_.to_pcl_ms / frames, profile_.voxel_ms / frames, profile_.align_ms / frames,
                 frames, frames / seconds);
+    // 点数漏斗与耗时同一窗口：审计 L7 的问题是「配准无有效对应」，那条日志里的
+    // source=64~70 才是病因，耗时全在正常范围。没有这条，现场只能怀疑体素或地图覆盖。
+    RCLCPP_INFO(
+        get_logger(), "点数漏斗: raw=%.0f crop=%.0f voxel=%.0f align_source=%.0f align_target=%.0f",
+        profile_.raw_points / frames, profile_.crop_points / frames, profile_.voxel_points / frames,
+        profile_.align_source / frames, profile_.align_target / frames);
     profile_ = ProfileTotals{};
 }
 
@@ -572,6 +606,8 @@ void LocalizationNode::on_align_timer() {
     const double align_ms = elapsed_ms(profile_align_begin);
     if (profile_enabled_) {
         profile_.align_ms += align_ms;
+        profile_.align_source += static_cast<double>(cloud.size());
+        profile_.align_target += static_cast<double>(map_.cloud.size());
         ++profile_.samples;
         maybe_flush_profile(now().nanoseconds());
     }
@@ -675,6 +711,14 @@ void LocalizationNode::publish_state() {
     // 也翻不回来，`pose_source: auto` 于是退化成「谁先到谁永久接管」。
     const bool lidar_available = lidar_available_locked(now_ns);
     const bool external_available = external_available_locked(now_ns);
+    // TF 失败记录写在回调线程（`lookup_base_from()`），这里是定时器线程：裸读是数据竞争，
+    // 必须先在 `tf_error_mutex_` 下取快照。锁序固定为 `mutex_ → tf_error_mutex_`，
+    // 反向路径不存在（`lookup_base_from()` 从不在持有 `mutex_` 时调用）。
+    std::string tf_error;
+    {
+        std::lock_guard<std::mutex> lock(tf_error_mutex_);
+        tf_error = tf_error_;
+    }
     active_source_ =
         foray::localization::select_pose_source(policy_, lidar_available, external_available);
     // 地图不可用是最靠前的成因：没有地图就没有配准，`on_align_timer()` 会在 `!has_map_`
@@ -691,6 +735,15 @@ void LocalizationNode::publish_state() {
         sample.mean_residual_m = 0.0;
         sample.inlier_ratio = 0.0;
         health_status_ = health_.update(sample, now_ns, now_ns, 0.0);
+    } else if (!tf_error.empty()) {
+        // TF 缺失：点云与里程计在 `lookup_base_from()` 处就被丢掉，一个样本都喂不进状态机，
+        // 于是下面的 odom 超时分支（要求 `has_odom_`）与激光断流分支都不会命中，
+        // 状态永久冻在 INITIALIZING——现场只能看到每 2 s 一条 WARN（审计 L3）。
+        // 判据只看「此刻 TF 是否通」而不是「有没有里程计」：里程计照常到、只有点云帧查不到
+        // 变换时，配准同样一帧都跑不起来，这时若按激光断流报，reason 会指向错误的方向。
+        // 记录由下一次 `lookup_base_from()` 成功清除，所以健康系统里它每帧都会被抹掉。
+        // 这类故障还没有任何配准证据，`ever_ok()` 为假，TF 补上后健康状态机会自恢复（D57）。
+        health_status_ = health_.enter_lost("tf unavailable: " + tf_error, now_ns);
     } else if (has_odom_ && health_config_.odom_timeout_sec > 0.0 &&
                static_cast<double>(now_ns - last_odom_ns_) / 1e9 >
                    health_config_.odom_timeout_sec) {
