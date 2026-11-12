@@ -215,7 +215,7 @@ class LocalizationNode : public rclcpp::Node {
     /// 和位姿一起发出去，而这两样东西原本只是 `on_align_timer()` 的局部变量，配准结束即丢弃。
     diesel::localization::RegistrationSample last_sample_;
     std::array<bool, diesel::localization_map::kDofCount> observable_{true, true, true,
-                                                                     true, true, true};
+                                                                      true, true, true};
     /// `filter_unobservable_noise_scale` 的原值。不可观方向的方差倍数与融合层共用同一个旋钮。
     double unobservable_noise_scale_{1.0};
     std::atomic<bool> relocalize_pending_{false};

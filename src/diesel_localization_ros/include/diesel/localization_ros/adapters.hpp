@@ -27,7 +27,7 @@ bool validate_point_cloud(const sensor_msgs::msg::PointCloud2& cloud, std::strin
 
 /// 转换点云；非法点（NaN/Inf）被跳过。失败时 error 非空。
 diesel::localization_map::PointCloud to_point_cloud(const sensor_msgs::msg::PointCloud2& cloud,
-                                                   std::string* error);
+                                                    std::string* error);
 
 /// 位姿必须全部有限，四元数模长不能接近 0。
 bool to_isometry(const geometry_msgs::msg::Pose& pose, Eigen::Isometry3d* transform);

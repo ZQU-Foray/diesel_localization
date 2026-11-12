@@ -355,7 +355,7 @@ void LocalizationNode::on_cloud(const sensor_msgs::msg::PointCloud2::ConstShared
     // 先裁切再降采样：裁切是纯空间过滤，先做可以省掉后续降采样的点数（decision.md D23/D25）。
     if (fov_horizontal_deg_ < 360.0 || fov_vertical_deg_ < 180.0) {
         points = diesel::localization_map::crop_by_fov(points, fov_horizontal_deg_,
-                                                      fov_vertical_deg_, fov_center_yaw_deg_);
+                                                       fov_vertical_deg_, fov_center_yaw_deg_);
         if (points.empty()) {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                                  "视场裁切后点云为空 (h=%.1f v=%.1f yaw=%.1f)，检查 fov_* 参数",
@@ -489,7 +489,8 @@ void LocalizationNode::on_external_pose(
     // 仲裁（decision.md D38）：显式 kExternal 一律接受；kAuto 只在雷达位姿确实断流时
     // 才把控制权交给外部位姿。父提交只挡了 kLidar，于是三份兵种配置的 `auto` 里，
     // 一路外部位姿会把雷达配准结果整条覆盖掉。
-    if (policy_ == diesel::localization::PoseSourcePolicy::kAuto && lidar_available_locked(now_ns)) {
+    if (policy_ == diesel::localization::PoseSourcePolicy::kAuto &&
+        lidar_available_locked(now_ns)) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
                              "忽略外部位姿: 雷达位姿仍然新鲜（pose_source=auto）");
         return;

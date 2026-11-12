@@ -35,7 +35,9 @@ CONFIG_DIR = Path("src/diesel_localization_bringup/config")
 # 没有机械规则能从 `diesel_localization` 推出 `localization_node.cpp`，所以显式列映射；
 # README 出现未登记的新节点名时直接报错，而不是悄悄漏检。
 NODE_SOURCES = {
-    "diesel_localization": Path("src/diesel_localization_ros/src/localization_node.cpp"),
+    "diesel_localization": Path(
+        "src/diesel_localization_ros/src/localization_node.cpp"
+    ),
     "diesel_map_server": Path("src/diesel_localization_ros/src/map_server_node.cpp"),
 }
 

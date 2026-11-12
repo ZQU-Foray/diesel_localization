@@ -53,7 +53,7 @@ bool validate_point_cloud(const sensor_msgs::msg::PointCloud2& cloud, std::strin
 }
 
 diesel::localization_map::PointCloud to_point_cloud(const sensor_msgs::msg::PointCloud2& cloud,
-                                                   std::string* error) {
+                                                    std::string* error) {
     diesel::localization_map::PointCloud result;
     if (!validate_point_cloud(cloud, error)) {
         return result;
