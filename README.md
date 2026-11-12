@@ -128,15 +128,21 @@ CI 的 `dir-layout` 作业按同一规则校验。
 为 `external` 时无条件采用；为 `auto` 时**只在雷达位姿断流超过 `lidar_timeout_sec` 期间**采用，
 雷达恢复后位姿源自动翻回雷达（`decision.md` D38）。外部位姿没有可测的配准质量，
 所以它不参与残差/内点率判据，健康状态只判它是否新鲜。
-| 输出 | `/localization/state` | `diesel_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
-| 输出 | `/localization/map_meta` | `diesel_localization_ros/MapMeta` | transient_local / 1 Hz |
-| 输出 | `/localization/dynamic_obstacles` | `diesel_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
+| 输出 | `localization/state` | `diesel_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
+| 输出 | `localization/map_meta` | `diesel_localization_ros/MapMeta` | transient_local / 1 Hz |
+| 输出 | `localization/dynamic_obstacles` | `diesel_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
+
+本仓自己发布的 3 个话题与 1 个服务都是**相对名**，由节点 namespace 决定全名：根命名空间下即
+`/localization/state`，实机按 `/diesel/<robot>` 注入后为 `/diesel/sentry/localization/state`
+（`foray_docs/diesel_naming_migration.md` §1.5）。上游话题（`cloud_topic` / `odom_topic` /
+`external_pose_topic`）仍是绝对名参数，由 launch 覆盖；TF 帧名（`map` / `odom` /
+`base_footprint` / `body`）不进 namespace。
 
 ### 服务
 
 | 名称 | 类型 | 说明 |
 |---|---|---|
-| `/localization/relocalize` | `diesel_localization_ros/Relocalize` | 注入 `map → base_frame` 初值（默认 `base_footprint`），状态机回到 `INITIALIZING` 直到收敛 |
+| `localization/relocalize` | `diesel_localization_ros/Relocalize` | 注入 `map → base_frame` 初值（默认 `base_footprint`），状态机回到 `INITIALIZING` 直到收敛 |
 
 ### TF
 

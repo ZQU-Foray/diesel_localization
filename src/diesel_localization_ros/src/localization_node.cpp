@@ -179,11 +179,11 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     const auto obstacle_qos = rclcpp::QoS(10).reliable();
 
     state_pub_ = create_publisher<diesel_localization_ros::msg::LocalizationState>(
-        "/localization/state", state_qos);
+        "localization/state", state_qos);
     map_meta_pub_ =
-        create_publisher<diesel_localization_ros::msg::MapMeta>("/localization/map_meta", map_qos);
+        create_publisher<diesel_localization_ros::msg::MapMeta>("localization/map_meta", map_qos);
     obstacle_pub_ = create_publisher<diesel_localization_ros::msg::DynamicObstacleArray>(
-        "/localization/dynamic_obstacles", obstacle_qos);
+        "localization/dynamic_obstacles", obstacle_qos);
 
     if (policy_ != diesel::localization::PoseSourcePolicy::kExternal) {
         rclcpp::SubscriptionOptions cloud_options;
@@ -214,7 +214,7 @@ LocalizationNode::LocalizationNode(const rclcpp::NodeOptions& options,
     }
 
     relocalize_srv_ = create_service<diesel_localization_ros::srv::Relocalize>(
-        "/localization/relocalize",
+        "localization/relocalize",
         std::bind(&LocalizationNode::on_relocalize, this, std::placeholders::_1,
                   std::placeholders::_2),
         rmw_qos_profile_services_default, service_group_);

@@ -17,7 +17,7 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
 
     const auto qos = rclcpp::QoS(1).reliable().transient_local();
     meta_pub_ =
-        create_publisher<diesel_localization_ros::msg::MapMeta>("/localization/map_meta", qos);
+        create_publisher<diesel_localization_ros::msg::MapMeta>("localization/map_meta", qos);
 
     if (manifest.empty()) {
         RCLCPP_ERROR(get_logger(), "map_manifest 未设置，地图服务不可用");
