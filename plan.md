@@ -177,7 +177,8 @@
   **进度（2026-11-11，宿主直接部署 ROS 2 humble，两个 colcon 空间 `foray_sim_ws` +
   `foray_simulation`）**：i1–i8 全部落地并提交（仿真仓 `fix/m11-body-tf`，本仓
   `fix/m11-health-contract`）；下列回执取自**已提交**的二进制。PR：本仓 #9（文档 → `dev`）、
-  #10（实现 → #9 的分支，堆叠，#9 合入后 base 改回 `dev`）；仿真仓 #6（→ `dev`）。
+  #10（实现 → `dev`，堆叠在 #9 之上以便工作流触发，先合 #9 则 #10 只剩代码差异）；
+  仿真仓 #6（→ `dev`，CI 八项全绿）。
   回执五（终验，ROS_DOMAIN_ID=66，判据修正后的最终代码）：`ready=PASS ready_delay_s=0.93
   lidar_s=0.13 localization_s=0.93 bt_navigator=active controller_server=active
   last_state=OK state_reason="warmup complete"`；`a2 samples=8336 max_xy_err=0.039
