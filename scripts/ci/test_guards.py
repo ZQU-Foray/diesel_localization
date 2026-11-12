@@ -33,7 +33,7 @@ SCRIPTS = ROOT / "scripts" / "ci"
 # 门禁自检不能依赖一个被 .gitignore 排除的文件。
 STYLE_PROBE = ROOT / "docs" / "probe-style.md"
 CONTRACT_PROBE = (
-    ROOT / "src" / "foray_localization_ros" / "msg" / "LocalizationState.msg"
+    ROOT / "src" / "diesel_localization_ros" / "msg" / "LocalizationState.msg"
 )
 PARAM_PROBE = ROOT / "README.md"
 TREE_PROBE = ROOT / "scripts" / "ci" / "probe_untracked.py"

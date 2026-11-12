@@ -6,19 +6,19 @@
   （M0 时 6 个包；仿真与离线工具包已于 2026-10-27 移除，现 5 个，见 `decision.md` D16）
 - [x] **M1 里程计与地图管线**：point_lio 话题接入、`build_map`/`validate_map`、manifest 格式冻结
 - [x] **M2 核心与配准**：健康状态机、位姿源仲裁、manifest 校验、GICP（PCL 后端 + ICP 兜底）、残差点
-  （PCL GICP 已于 2026-10-30 实装并成为默认后端，`-DFORAY_WITH_PCL=OFF` 退回内置 ICP；见 `decision.md` D21）
+  （PCL GICP 已于 2026-10-30 实装并成为默认后端，`-DDIESEL_WITH_PCL=OFF` 退回内置 ICP；见 `decision.md` D21）
 - [x] **M3 ROS 层**：LocalizationState/MapMeta/DynamicObstacle/Relocalize 消息、主节点、map_server、TF/QoS
 - [x] **M4 动态物体与重定位**：残差聚类发布、Relocalize 服务与状态机联动、允许动态区域
 - [ ] **M5 HIL 验证**：录包回放、ATE/RPE、DEGRADED/LOST 时序验证
   - ~~**M5a 离车仿真闭环**~~：已删除（2026-10-27，见 `decision.md` D16）——合成点云回放、
     真值里程计注入、ATE/RPE 评估脚本与 CI `sim-smoke` 整体移出本仓
-  - [x] **M5b Gazebo 联调**：由下游仿真仓 `foray_simulation` 承接并已取证（其需求 A2 就是本仓的
+  - [x] **M5b Gazebo 联调**：由下游仿真仓 `diesel_simulation` 承接并已取证（其需求 A2 就是本仓的
     仿真验收口径：10 s 内状态 `OK`、位置误差 < 0.30 m、朝向误差 < 5°）——场景与话题映射在
     **本仓之外**完成，本仓只提供可订阅的定位节点（`decision.md` D16）
   - [ ] **M5c 实车 bag 验证**：现场录包后复算阈值并写回 config
 - [ ] **M6 调参与交付**：2027 场地地图、阈值标定、运维文档、兵种 launch 验收（3v3：步兵/哨兵）
 - [x] **M7 布局与命名规范化**：包迁入 `src/`（仓根即 colcon 空间根，现 5 个包）、
-  `foray_localization_place` → `foray_localization_relocalization`、CI `dir-layout` 作业、
+  `diesel_localization_place` → `diesel_localization_relocalization`、CI `dir-layout` 作业、
   文档与配置同步（见 `decision.md` D12）
   - [x] **M7a CI 首次真实运行修复**：补仓根 `requirements.txt`（test-python 缺 PyYAML）、
     清 ruff / clang-format 违规、脚本记录 100755、`pyproject.toml` 固定 Python 3.10
@@ -52,14 +52,14 @@
     `filter_enabled: false` 时与改造前逐字节等价的直通路径
   - [x] **i6 性能零依赖优化**：逆矩阵缓存、`PointCloudIndex` 与 target 法向复用、
     `setInputTarget` 跨帧复用可行性验证；逐项独立提交并给分段耗时表
-  - [x] **i7 可选 small_gicp 后端评估**：`FORAY_WITH_SMALL_GICP`（默认 OFF），
+  - [x] **i7 可选 small_gicp 后端评估**：`DIESEL_WITH_SMALL_GICP`（默认 OFF），
     实测提速 < 15% 则不引入
   - [ ] **i8 GUI 审查产物**：补 `odom → base_footprint` 后尝试 RViz；不可用则交付
     monitor 四联图 + 自包含 HTML 报告
-- [x] **M10 审计整改 L1–L18**（`audit/tasks/02-foray_localization.md`，原则见 `decision.md` D28）
+- [x] **M10 审计整改 L1–L18**（`audit/tasks/02-diesel_localization.md`，原则见 `decision.md` D28）
   2026-11-03 全部 20 条落地：22 个提交在 `fix/audit-localization-02`（PR #7，base 为审计基线
   `feat/fov-observability-ekf`），每条都留了「父提交红 / 修复后绿」回执；容器内
-  `FORAY_WITH_PCL=ON` 145 tests、`OFF` 138 tests 均 0 failures，四道门禁全绿。
+  `DIESEL_WITH_PCL=ON` 145 tests、`OFF` 138 tests 均 0 failures，四道门禁全绿。
   - [x] **测试基建**：节点实现进库、可注入配准后端、`Diagnostics` 计数
     （`decision.md` D29）
   - [x] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
@@ -165,17 +165,17 @@
       `[WARN] 先验地图有 1 行被跳过（字段数不足或 x/y/z 非有限），装载点数 3`。
   - [x] **验收清单入口**：新增 `scripts/ci/test_ros_results.py`，把 `colcon test` 写下的
     gtest XML 汇总成覆盖清单，并按名字断言 20 条发现的验收用例都在（L14 两条只在
-    `FORAY_WITH_PCL=ON` 时要求）。回执：`python3 -m pytest scripts/ci/test_ros_results.py -q -s`
+    `DIESEL_WITH_PCL=ON` 时要求）。回执：`python3 -m pytest scripts/ci/test_ros_results.py -q -s`
     在 PCL ON 构建上 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed`；在
-    `FORAY_RESULTS_ROOT=/ws/build-nopcl` 上 `17 个 / 117 个` + `2 passed, 1 skipped`（`decision.md` D55）。
+    `DIESEL_RESULTS_ROOT=/ws/build-nopcl` 上 `17 个 / 117 个` + `2 passed, 1 skipped`（`decision.md` D55）。
 
 - [ ] **M11 联调缺陷整改 L1–L8**（2026-11-11 仿真联调复盘；设计与取舍见 `decision.md` D56–D59）
   结论先说：A2 失败与 `ready=FAIL` 的根因都**不在配准算法**，在**帧契约与状态机表达**——
   仿真链里没有 `body` 帧，定位节点一帧点云都吃不到；节点又把「吃不到帧」表达成永不结束的
   `INITIALIZING`。补上帧之后 A2 仍掉锁，那是另一条独立成因（点数漏斗塌缩，见 i6）。
   顺序：i1 解 `ready` → i2/i3 健康契约 → i4/i5 判据与口径可见性 → i6 精度 → i7 验收可读性 → i8 收口。
-  **进度（2026-11-11，宿主直接部署 ROS 2 humble，两个 colcon 空间 `foray_sim_ws` +
-  `foray_simulation`）**：i1–i8 全部落地并提交（仿真仓 `fix/m11-body-tf`，本仓
+  **进度（2026-11-11，宿主直接部署 ROS 2 humble，两个 colcon 空间 `diesel_ws` +
+  `diesel_simulation`）**：i1–i8 全部落地并提交（仿真仓 `fix/m11-body-tf`，本仓
   `fix/m11-health-contract`）；下列回执取自**已提交**的二进制。PR：本仓 #9（文档 → `dev`）、
   #10（实现 → `dev`，堆叠在 #9 之上以便工作流触发，先合 #9 则 #10 只剩代码差异）；
   仿真仓 #6（→ `dev`）。三份 PR 的 CI 全绿（本仓 10 项：含 build-ros2 / build-nopcl 的
@@ -196,9 +196,9 @@
   回执三（A2）：`samples=14394 first_ok_delay=0.00 max_xy_err=0.035 max_yaw=0.139
   last_state=OK lost=0 verdict=PASS`——对照整改前 `samples=4161 max_xy_err=0.076
   lost=5571 verdict=FAIL`。
-  回执四：`colcon test --packages-select foray_localization_core` → 5/5 通过，
+  回执四：`colcon test --packages-select diesel_localization_core` → 5/5 通过，
   `test_health.xml` 的 `HealthMonitor` 12 例（含 i3 新增两例）全绿。
-  - [x] **i1 L1/L2 仿真 `body` 帧契约**（跨仓：`foray_simulation`）：`point_lio` 硬编码
+  - [x] **i1 L1/L2 仿真 `body` 帧契约**（跨仓：`diesel_simulation`）：`point_lio` 硬编码
     `body`（`laserMapping.cpp:228` 点云帧、`:270` 里程计子帧），而
     `localization_sim.launch.py` 只发了 `base_footprint→front_mid360`。修法：launch 增一条
     `base_footprint→body` 恒等静态 TF（**父 = `base_footprint`，方向不可反**，D56）。
@@ -247,7 +247,7 @@
     `localization_sim.launch.py` 覆盖成 5.0/2.0/2.5（各有实测依据）。数值不改，改**可见性**：
     节点启动打一行「lost / odom / lidar 时限 + 来源」；仿真仓把三个覆盖值提成
     `DeclareLaunchArgument`（默认仍 2.0/2.5/5.0），复现实车口径不必改代码；参数表加脚注
-    说明仿真链路由 `foray_simulation` 覆盖（D59）。
+    说明仿真链路由 `diesel_simulation` 覆盖（D59）。
   - [x] **i6 L7 A2 掉锁的真因：先测量再改**（本仓 + 跨仓）：两条嫌疑已排除——
     **出生点不在图外**：先验图 `rmul_2027.pcd` 102433 点，`x∈[-0.30,12.30]`、`y∈[-0.30,8.30]`、
     `z∈[-0.10,0.40]`，spawn `(6.0,4.0)` 在场心，10 m 内 102433 点、3 m 内 26594 点、前向 30°
@@ -260,14 +260,14 @@
     `fov_horizontal_deg` 覆盖成 `360.0`（gz 雷达全视场，与实车 Livox 稀疏扫描不是一回事，D59）。
     验收：`accept.py a2` 的 `source` 回到四位数、`lost=0`、`verdict=PASS`；拿到漏斗数据前
     **不动** `voxel_leaf_m`：`align_max_correspondence_m: 0.5` 约等于 2× 地图体素 0.25 m，本身合理。
-  - [x] **i7 L8 验收脚本带 reason**（跨仓：`foray_simulation`）：`accept.py:124-133` 只存
+  - [x] **i7 L8 验收脚本带 reason**（跨仓：`diesel_simulation`）：`accept.py:124-133` 只存
     `last_state` 名字，`:223/:275/:301` 也只打这一项，于是「为什么 LOST」得回翻定位节点日志。
     修法：`_on_state` 连 `msg.reason` 一起存，`ready`/`a2`/`a3` 输出 `state_reason`。
-  - [x] **i8 验证与回执**：容器 `foray_sim:humble-fortress` 内 `FORAY_WITH_PCL=ON` / `OFF` 两轮
+  - [x] **i8 验证与回执**：容器 `diesel_sim:humble-fortress` 内 `DIESEL_WITH_PCL=ON` / `OFF` 两轮
     `colcon test`（本仓现口径 145 / 138，新增用例计入）；`scripts/ci/test_ros_results.py`
     的名字清单同步登记新用例；四道门禁 + 仿真仓 `accept.py ready` / `a2` 回执贴进本条。
-    回执（2026-11-11 宿主直跑，取代容器口径）：`colcon test --base-paths src/foray_localization`
-    → ON 143 例、`--build-base build-nopcl -DFORAY_WITH_PCL=OFF` → OFF 119 例（含新增用例）。
+    回执（2026-11-11 宿主直跑，取代容器口径）：`colcon test --base-paths src/diesel_localization`
+    → ON 143 例、`--build-base build-nopcl -DDIESEL_WITH_PCL=OFF` → OFF 119 例（含新增用例）。
     两轮都只剩 `test_localization_node` 的两条实时性断言（`max_odom_lag_sec < 0.05`）在宿主
     负载 ~12 时超线（60 ms / 83 ms）；**基线对照**：`git stash` 后同一份 dev 代码在同一负载下
     同样失败这 2 例，单独运行（负载回落）则两条全绿（35.2 ms / 40.7 ms）⇒ 属宿主机负载敏感的
@@ -280,34 +280,34 @@
 ## 当前 Agent State
 
 DELIVERED：5 个 package 全部位于 `src/`（仓根即 colcon 空间根），重定位包已更名为
-`foray_localization_relocalization`。2026-10-27 按「只保留核心定位算法」移除合成仿真与
+`diesel_localization_relocalization`。2026-10-27 按「只保留核心定位算法」移除合成仿真与
 离线工具（`decision.md` D16）：无 `sim-smoke`、无建图/评估脚本。车下验证改为录制包回放。
 2026-10-28 补上文档与接口门禁（`decision.md` D18），CI 共 10 个作业：`dir-layout` /
 `file-hygiene` / `doc-sync` / `param-contract` / `contract-lock` / `gate-selftest` /
 `lint-python` / `lint-c` / `build-ros2` / `build-nopcl`（作业清单以 `.github/workflows/ci.yml`
 的 `jobs` 为准，此处只是便于扫读的复述；此前写成「8 个」并漏列 `gate-selftest` 正是靠人眼
 同步数字的产物）。第十个作业 `build-nopcl` 是 2026-10-30 实装 PCL GICP 时加的（`decision.md`
-D21）：默认的 `build-ros2` 走 `FORAY_WITH_PCL=ON` 守护 GICP 主路径，`build-nopcl` 走 `OFF`
+D21）：默认的 `build-ros2` 走 `DIESEL_WITH_PCL=ON` 守护 GICP 主路径，`build-nopcl` 走 `OFF`
 守护内置 ICP 回退路径——只验一条路径等于另一条迟早烂掉。
-M5b 的承接方 `foray_simulation` 已建成并取证（首次 `OK` 3.78 s、位姿误差 0.083 m、
+M5b 的承接方 `diesel_simulation` 已建成并取证（首次 `OK` 3.78 s、位姿误差 0.083 m、
 `yaw` 0.012°，95 s 采样 4737 条状态中 4423 条 `OK`、零 `DEGRADED`/`LOST`）；M5c（实车 bag）
 仍待实车条件。
 验证环境：宿主无 ROS 2 / colcon / PCL，`colcon build` 与 `colcon test` 一律在容器里跑——
-镜像 `foray_sim:humble-fortress`（Humble + Gazebo Fortress，含 PCL 1.12、gtest、colcon），
+镜像 `diesel_sim:humble-fortress`（Humble + Gazebo Fortress，含 PCL 1.12、gtest、colcon），
 本仓与仿真仓一起挂到 `/ws/src/`。2026-10-30 实测：装 PCL GICP 前 5 个包构建 51 s、
 73 tests / 0 errors / 0 failures；装之后同一口径（本仓 5 个包，`colcon test-result` 汇总）
-默认 ON 报 **75 tests**、`-DFORAY_WITH_PCL=OFF` 报 **70 tests**，两轮均 0 failures——
+默认 ON 报 **75 tests**、`-DDIESEL_WITH_PCL=OFF` 报 **70 tests**，两轮均 0 failures——
 差的那 5 条就是 `test_pcl_gicp`（4 个用例 + 该文件在 CTest 里的汇总条目），map 包单独口径
 是 ON 34 / OFF 29。CI 的 `build-ros2` 保留，防的是「只在容器里验过」。
 2026-11-03 完成审计整改 M10：节点级测试基建落地后，`colcon test` 口径从 73 条涨到
-**145 条**（`FORAY_WITH_PCL=OFF` 138 条），20 条发现的验收用例全部按名字被
+**145 条**（`DIESEL_WITH_PCL=OFF` 138 条），20 条发现的验收用例全部按名字被
 `scripts/ci/test_ros_results.py` 断言存在（`decision.md` D55）；健康契约、协方差契约、
 执行器要求与地图硬上限都已写进 `README.md`，取舍记在 `decision.md` D30–D55。
 
 ## 模糊点与待确认项
 
-- `foray_interfaces` 的 0.2.0 消息尚未落地；首版消息暂放 `foray_localization_ros`，迁移计划见 `decision.md` D8
-- `small_gicp` 由 `decision.md` **D25 立为可选的编译期后端评估**（`FORAY_WITH_SMALL_GICP`，
+- `diesel_interfaces` 的 0.2.0 消息尚未落地；首版消息暂放 `diesel_localization_ros`，迁移计划见 `decision.md` D8
+- `small_gicp` 由 `decision.md` **D25 立为可选的编译期后端评估**（`DIESEL_WITH_SMALL_GICP`，
   默认 OFF，实测提速 < 15% 则不引入）——此前「不再计划」的表述已作废；PCL GICP 仍是默认后端
   （`decision.md` D21），`D9` 里「首版用 PCL GICP + 内置 ICP 兜底」的设想已在 D21 落地
 - `bringup/config/heavy.yaml` 对应装甲兵种，不在 2027 3v3 阵容（步兵×2 + 哨兵×1，

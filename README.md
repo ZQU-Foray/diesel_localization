@@ -1,4 +1,4 @@
-# foray_localization
+# diesel_localization
 
 > **L3** · owner 角色：导航
 
@@ -11,9 +11,9 @@
 ## 快速开始
 
 ```bash
-# 1. 拉取（仓齐备后改为从元仓 foray_ws 一键拉取）
-git clone git@github.com:ZQU-Foray/foray_localization.git
-cd foray_localization
+# 1. 拉取（仓齐备后改为从元仓 diesel_ws 一键拉取）
+git clone git@github.com:ZQU-Foray/diesel_localization.git
+cd diesel_localization
 
 # 2. 依赖安装（PCL 由 package.xml 经 rosdep 带入；无 PCL 环境的降级构建见「依赖」）
 rosdep install -y -r --from-paths src --ignore-src --rosdistro humble
@@ -23,7 +23,7 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # 4. 运行（哨兵；步兵/重装用 config_name:=infantry.yaml / heavy.yaml）
 source install/setup.bash
-ros2 launch foray_localization_bringup localization.launch.py \
+ros2 launch diesel_localization_bringup localization.launch.py \
   config_name:=sentry.yaml \
   map_manifest:=/path/to/map/manifest.yaml
 ```
@@ -35,7 +35,7 @@ ros2 launch foray_localization_bringup localization.launch.py \
 
 ```bash
 # 录制包重放：节点照常订阅 /livox/lidar 与 /aft_mapped_to_init
-ros2 launch foray_localization_bringup localization.launch.py \
+ros2 launch diesel_localization_bringup localization.launch.py \
   config_name:=sentry.yaml map_manifest:=/path/to/map/manifest.yaml &
 ros2 bag play <recorded_bag> --clock
 ```
@@ -44,10 +44,10 @@ ros2 bag play <recorded_bag> --clock
   回到 `INITIALIZING` 并收敛到 `OK`。
 - 建图与地图验证在**本仓之外**完成；本仓只消费符合 `manifest.yaml` 契约的地图（见「地图」）。
 - CI 只断言「可构建 + 可执行文件安装位置 + launch 参数可解析 + `colcon test` 通过」，
-  **不对定位精度作断言**——精度验收在两处：实车录制包，与下游仿真仓 `foray_simulation`
+  **不对定位精度作断言**——精度验收在两处：实车录制包，与下游仿真仓 `diesel_simulation`
   （它的需求 A2 就是本仓在仿真里的验收口径：10 s 内状态 `OK`、位置误差 < 0.30 m、
   朝向误差 < 5°）。
-- 本地跑单元测试不需要装 ROS：容器 `foray_sim:humble-fortress`（Humble + Gazebo Fortress，
+- 本地跑单元测试不需要装 ROS：容器 `diesel_sim:humble-fortress`（Humble + Gazebo Fortress，
   含 PCL 1.12）把本仓挂到 `/ws/src/`，在里面 `colcon build` / `colcon test` 即可。
 
 ## 定位方案
@@ -65,10 +65,10 @@ MID360 点云 ──► point_lio（仅里程计）──► T_odom_lidar
 ```
 
 - **里程计**：`point_lio` 只提供 `odom → lidar`，不参与地图更新；赛时不做 SLAM。
-- **配准**：`foray_localization_map` 以先验 PCD 地图为目标做 GICP（默认 PCL GICP，5 Hz），
+- **配准**：`diesel_localization_map` 以先验 PCD 地图为目标做 GICP（默认 PCL GICP，5 Hz），
   输出 `T_map_lidar`、fitness、内点率与残差点。后端在**编译期**选择：
-  `-DFORAY_WITH_PCL=OFF` 时退回内置点到点 ICP（精度较低，仅用于无 PCL 环境与降级排查）。
-- **融合**：`foray_localization_ros` 由 `T_map_lidar` 与 `T_odom_lidar` 合成
+  `-DDIESEL_WITH_PCL=OFF` 时退回内置点到点 ICP（精度较低，仅用于无 PCL 环境与降级排查）。
+- **融合**：`diesel_localization_ros` 由 `T_map_lidar` 与 `T_odom_lidar` 合成
   `map → odom`，以 20 Hz 发布；`LocalizationState` 以 50 Hz 发布。
 - **位姿滤波**：融合层对 `map → odom` 做 EKF（`decision.md` D24）。配准是 5 Hz 的离散量测，
   两次量测之间的 200 ms 全靠里程计外推；不滤波时每次配准都会让 `map → odom` 阶跃跳变。
@@ -77,7 +77,7 @@ MID360 点云 ──► point_lio（仅里程计）──► T_odom_lidar
   可整体关闭退回直通（逃生口见 `decision.md` D24）。
 - **可观测性与裁切**：定位必须在**视野被裁**时仍可用——既包括传感器视场受限、遮挡造成的被动
   裁切，也包括为省算力主动做的 ROI / FOV 裁切。配准是否可信不能用单一阈值概括：
-  `foray_localization_map` 在配准收敛位姿上建立**点面残差信息矩阵**（6×6），特征分解得到各
+  `diesel_localization_map` 在配准收敛位姿上建立**点面残差信息矩阵**（6×6），特征分解得到各
   自由度的可观性，把不可观方向显式上报，并**只在可观方向上**接受配准修正（`decision.md` D23）；
   不可观方向的位姿由里程计外推承担，不被退化解拉走。可观性说的「绕原点转」必须是被修正的那个
   位姿的原点（滤波启用时是 `map → odom`），不是本体位置——两者相差机器人离里程计原点的距离
@@ -104,11 +104,11 @@ CI 的 `dir-layout` 作业按同一规则校验。
 
 | package | 职责 | 是否依赖 ROS |
 |---|---|---|
-| `foray_localization_core` | 位姿/健康状态机/位姿源仲裁/地图 manifest/几何，纯函数 | 否 |
-| `foray_localization_map` | PCD 先验地图、2D 栅格、PCL GICP 后端（内置 ICP 兜底）、残差聚类 | 否 |
-| `foray_localization_ros` | 节点、TF、QoS、消息/服务、map_server、适配器 | 是 |
-| `foray_localization_relocalization` | 可选 ONNX Runtime（CPU）全局重定位（原 `_place`，已更名），默认 OFF | 可选 |
-| `foray_localization_bringup` | 三兵种 launch / params（`heavy.yaml` 为装甲兵种预留，2027 3v3 不使用） | 是 |
+| `diesel_localization_core` | 位姿/健康状态机/位姿源仲裁/地图 manifest/几何，纯函数 | 否 |
+| `diesel_localization_map` | PCD 先验地图、2D 栅格、PCL GICP 后端（内置 ICP 兜底）、残差聚类 | 否 |
+| `diesel_localization_ros` | 节点、TF、QoS、消息/服务、map_server、适配器 | 是 |
+| `diesel_localization_relocalization` | 可选 ONNX Runtime（CPU）全局重定位（原 `_place`，已更名），默认 OFF | 可选 |
+| `diesel_localization_bringup` | 三兵种 launch / params（`heavy.yaml` 为装甲兵种预留，2027 3v3 不使用） | 是 |
 
 ## 接口
 
@@ -128,21 +128,27 @@ CI 的 `dir-layout` 作业按同一规则校验。
 为 `external` 时无条件采用；为 `auto` 时**只在雷达位姿断流超过 `lidar_timeout_sec` 期间**采用，
 雷达恢复后位姿源自动翻回雷达（`decision.md` D38）。外部位姿没有可测的配准质量，
 所以它不参与残差/内点率判据，健康状态只判它是否新鲜。
-| 输出 | `/localization/state` | `foray_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
-| 输出 | `/localization/map_meta` | `foray_localization_ros/MapMeta` | transient_local / 1 Hz |
-| 输出 | `/localization/dynamic_obstacles` | `foray_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
+| 输出 | `localization/state` | `diesel_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
+| 输出 | `localization/map_meta` | `diesel_localization_ros/MapMeta` | transient_local / 1 Hz |
+| 输出 | `localization/dynamic_obstacles` | `diesel_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
+
+本仓自己发布的 3 个话题与 1 个服务都是**相对名**，由节点 namespace 决定全名：根命名空间下即
+`/localization/state`，实机按 `/diesel/<robot>` 注入后为 `/diesel/sentry/localization/state`
+（`foray_docs/diesel_naming_migration.md` §1.5）。上游话题（`cloud_topic` / `odom_topic` /
+`external_pose_topic`）仍是绝对名参数，由 launch 覆盖；TF 帧名（`map` / `odom` /
+`base_footprint` / `body`）不进 namespace。
 
 ### 服务
 
 | 名称 | 类型 | 说明 |
 |---|---|---|
-| `/localization/relocalize` | `foray_localization_ros/Relocalize` | 注入 `map → base_frame` 初值（默认 `base_footprint`），状态机回到 `INITIALIZING` 直到收敛 |
+| `localization/relocalize` | `diesel_localization_ros/Relocalize` | 注入 `map → base_frame` 初值（默认 `base_footprint`），状态机回到 `INITIALIZING` 直到收敛 |
 
 ### TF
 
 | 变换 | 发布者 | 频率 |
 |---|---|---|
-| `map → odom` | `foray_localization_ros` | 20 Hz |
+| `map → odom` | `diesel_localization_ros` | 20 Hz |
 | `odom → lidar` | `point_lio` | 100–200 Hz |
 | `base_footprint → lidar` | URDF / `robot_state_publisher`（静态） | — |
 | `base_footprint → <里程计 child_frame>` | 本体侧（URDF 静态或仿真链） | — |
@@ -163,7 +169,7 @@ CI 的 `dir-layout` 作业按同一规则校验。
 （历史：旧校验脚本随工具包删除后曾一度退回人工核对，`decision.md` D16；D18 以零依赖方式恢复。）
 **本表是实现之外的唯一参数清单。**
 
-#### 本地化节点参数（`foray_localization`）
+#### 本地化节点参数（`diesel_localization`）
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -208,7 +214,7 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `odom_topic` | `/aft_mapped_to_init` | 输入里程计话题 |
 | `external_pose_topic` | `/localization/external_pose` | 输入外部位姿话题 |
 
-#### 地图服务节点参数（`foray_map_server`）
+#### 地图服务节点参数（`diesel_map_server`）
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -299,19 +305,19 @@ ascii 段里字段数不足的行、以及 x/y/z 为 NaN/inf 的点会被跳过�
 
 | 类型 | 依赖 |
 |---|---|
-| **自研仓** | X2（foray_interfaces）· L1（foray_platform）· L2 |
+| **自研仓** | X2（diesel_interfaces）· L1（diesel_platform）· L2 |
 | **第三方** | Eigen3 · yaml-cpp · PCL（GICP 默认后端，必需，≥1.10）· point_lio（pin）· ONNX Runtime（可选，默认 OFF） |
 
-- `point_lio` 以独立进程运行，按 `foray_ws` 的 pin 构建；本仓只消费其话题。
+- `point_lio` 以独立进程运行，按 `diesel_ws` 的 pin 构建；本仓只消费其话题。
 - PCL 由 `package.xml` 的 `libpcl-all-dev` 经 rosdep 安装，是默认配准后端 GICP 的依赖；
-  `colcon build --cmake-args -DFORAY_WITH_PCL=OFF` 退回内置点到点 ICP（精度较低，仅用于
+  `colcon build --cmake-args -DDIESEL_WITH_PCL=OFF` 退回内置点到点 ICP（精度较低，仅用于
   无 PCL 的最小构建与降级排查）。这是**编译期**选择，不做运行时静默回退：
   找不到 PCL 时 configure 直接失败，而不是悄悄换成另一个后端（decision.md D21）。
-- `ONNX Runtime` 仅 `foray_localization_relocalization` 使用，`FORAY_WITH_ONNX=ON` 时编译。
+- `ONNX Runtime` 仅 `diesel_localization_relocalization` 使用，`DIESEL_WITH_ONNX=ON` 时编译。
 - 验证过的构建环境是 Linux（ROS 2 Humble；CI 用 `ros:humble` 容器）。Windows 上
   `scripts/ci/` 的四道门禁与 pytest 自检可以正常跑（`.gitattributes` 已把检出换行钉成 LF，
   门禁按字节判 CRLF，不依赖平台的换行翻译），但 **ROS 2 + PCL 的 Windows 构建从未验证过**；
-  要在 Windows 上试，先用 `-DFORAY_WITH_PCL=OFF` 把 PCL 摘掉，别一上来就卡在找 PCL。
+  要在 Windows 上试，先用 `-DDIESEL_WITH_PCL=OFF` 把 PCL 摘掉，别一上来就卡在找 PCL。
 
 ## 纪律
 
@@ -324,8 +330,8 @@ ascii 段里字段数不足的行、以及 x/y/z 为 NaN/inf 的点会被跳过�
 
 | 方向 | 对象 |
 |---|---|
-| **上游**（本仓依赖谁） | `foray_interfaces` · `foray_platform` |
-| **下游**（谁依赖本仓） | `foray_vision` · `foray_navigation` · `foray_decision` · `foray_robots` · `foray_ws` |
+| **上游**（本仓依赖谁） | `diesel_interfaces` · `diesel_platform` |
+| **下游**（谁依赖本仓） | `diesel_vision` · `diesel_navigation` · `diesel_decision` · `diesel_robots` · `diesel_ws` |
 
 ## 参考
 

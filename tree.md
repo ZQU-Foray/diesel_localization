@@ -16,10 +16,10 @@
 
 - 核心包用 `<仓名>_core`，不与仓同名
 - 角色后缀封闭词表：`_core` / `_ros` / `_map` / `_relocalization` / `_bringup`
-- 重定位能力的包名是 **`foray_localization_relocalization`**
-  （原 `foray_localization_place`，2026-10-25 更名，见 `decision.md` D12）
-- 公共头文件目录与命名空间跟随包名：`include/foray/localization_relocalization/`、
-  `namespace foray::localization_relocalization`
+- 重定位能力的包名是 **`diesel_localization_relocalization`**
+  （原 `diesel_localization_place`，2026-10-25 更名，见 `decision.md` D12）
+- 公共头文件目录与命名空间跟随包名：`include/diesel/localization_relocalization/`、
+  `namespace diesel::localization_relocalization`
 
 ## 目录结构
 
@@ -31,7 +31,7 @@
 ├── decision.md                    关键工程决策（D1–D19；D17 为空号，缘由见 D18 编号说明）
 ├── tree.md                        本文件
 ├── CODEOWNERS                     Review 自动分派
-├── .foray-layer                   所属层与依赖边界（CI 校验）
+├── .diesel-layer                   所属层与依赖边界（CI 校验）
 ├── .gitignore
 ├── .clang-format                  C/C++ 格式基线，CI `lint-c` 依此校验
 ├── .gitattributes                 检出侧强制 LF，与 check_style.py 的 LF 断言配套
@@ -54,11 +54,11 @@
 │   └── probe-style.md             门禁风格探针（test_guards 注入缺陷用，无需求语义）
 │
 ├── src/                           全部 ROS 2 包（仓根即 colcon 空间根）
-│   ├── foray_localization_core/        L3 核心，纯 C++17，无 ROS
+│   ├── diesel_localization_core/        L3 核心，纯 C++17，无 ROS
 │   │   ├── CMakeLists.txt
 │   │   ├── package.xml
-│   │   ├── cmake/foray_localization_coreConfig.cmake.in
-│   │   ├── include/foray/localization/
+│   │   ├── cmake/diesel_localization_coreConfig.cmake.in
+│   │   ├── include/diesel/localization/
 │   │   │   ├── geometry.hpp           SE(3)/yaw/坐标变换
 │   │   │   ├── health.hpp             健康状态机与位姿源仲裁
 │   │   │   ├── manifest.hpp           地图 manifest 解析/校验
@@ -78,11 +78,11 @@
 │   │       ├── test_pose_ekf.cpp
 │   │       └── test_sha256.cpp
 │   │
-│   ├── foray_localization_map/         L3 地图与配准，无 ROS
+│   ├── diesel_localization_map/         L3 地图与配准，无 ROS
 │   │   ├── CMakeLists.txt
 │   │   ├── package.xml
-│   │   ├── cmake/foray_localization_mapConfig.cmake.in
-│   │   ├── include/foray/localization_map/
+│   │   ├── cmake/diesel_localization_mapConfig.cmake.in
+│   │   ├── include/diesel/localization_map/
 │   │   │   ├── aligner.hpp            Aligner 配准抽象
 │   │   │   ├── aligner_factory.hpp    按编译期开关构造配准后端
 │   │   │   ├── alignment_metrics.hpp  共享配准质量口径 + 体素近邻索引
@@ -101,7 +101,7 @@
 │   │   │   ├── icp_aligner.cpp
 │   │   │   ├── observability.cpp
 │   │   │   ├── pcd_loader.cpp
-│   │   │   ├── pcl_gicp_aligner.cpp   仅 FORAY_WITH_PCL=ON 时参与编译
+│   │   │   ├── pcl_gicp_aligner.cpp   仅 DIESEL_WITH_PCL=ON 时参与编译
 │   │   │   ├── point_cloud.cpp
 │   │   │   ├── prior_map.cpp
 │   │   │   └── residual_clusterer.cpp
@@ -110,12 +110,12 @@
 │   │       ├── test_icp.cpp
 │   │       ├── test_observability.cpp
 │   │       ├── test_pcd_loader.cpp
-│   │       ├── test_pcl_gicp.cpp      仅 FORAY_WITH_PCL=ON 时注册
+│   │       ├── test_pcl_gicp.cpp      仅 DIESEL_WITH_PCL=ON 时注册
 │   │       ├── test_point_cloud.cpp
 │   │       ├── test_prior_map.cpp
 │   │       └── test_residual_clusterer.cpp
 │   │
-│   ├── foray_localization_ros/         L3 ROS 2 层（节点/TF/QoS/消息）
+│   ├── diesel_localization_ros/         L3 ROS 2 层（节点/TF/QoS/消息）
 │   │   ├── CMakeLists.txt
 │   │   ├── package.xml
 │   │   ├── msg/
@@ -125,7 +125,7 @@
 │   │   │   └── MapMeta.msg
 │   │   ├── srv/
 │   │   │   └── Relocalize.srv
-│   │   ├── include/foray/localization_ros/
+│   │   ├── include/diesel/localization_ros/
 │   │   │   ├── adapters.hpp           点云/里程计/外部位姿校验与转换
 │   │   │   ├── conversion.hpp         ROS ↔ core/map 类型转换
 │   │   │   ├── localization_node.hpp  主节点
@@ -144,14 +144,14 @@
 │   │       ├── test_localization_node.cpp          在进程内构造主节点跑状态/配准/诊断
 │   │       └── test_localization_node_map_errors.cpp  地图不可用时一帧 TF 都不发
 │   │
-│   ├── foray_localization_relocalization/  可选 ONNX Runtime CPU 重定位（默认 OFF）
+│   ├── diesel_localization_relocalization/  可选 ONNX Runtime CPU 重定位（默认 OFF）
 │   │   ├── CMakeLists.txt
 │   │   ├── package.xml
-│   │   ├── include/foray/localization_relocalization/place_localizer.hpp
+│   │   ├── include/diesel/localization_relocalization/place_localizer.hpp
 │   │   ├── src/place_localizer.cpp
 │   │   └── test/test_place_localizer.cpp
 │   │
-│   └── foray_localization_bringup/     兵种装配（2027 3v3 用步兵/哨兵）
+│   └── diesel_localization_bringup/     兵种装配（2027 3v3 用步兵/哨兵）
 │       ├── CMakeLists.txt
 │       ├── package.xml
 │       ├── config/

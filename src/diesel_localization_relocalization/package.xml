@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>diesel_localization_relocalization</name>
+  <version>0.1.0</version>
+  <description>RMUL 2027 3v3 定位层可选地点识别后端（纯 CPU ONNX，默认关闭）。</description>
+  <maintainer email="dev@zqu-foray.cn">ZQU-Foray</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+  <depend>diesel_localization_core</depend>
+  <depend>diesel_localization_map</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

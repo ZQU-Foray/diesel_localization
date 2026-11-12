@@ -1,0 +1,49 @@
+# 重装（装甲）：与哨兵同构，配准阈值按车体更高、点云更密放宽一档。
+#
+# 归档说明：2027 3v3 阵容为步兵×2 + 哨兵×1（foray_docs/algorithm_structure.md §12），
+# 本配置为装甲兵种**预留**，不参与任何默认启动或验收；保留以免丢失既有标定值。
+diesel_map_server:
+  ros__parameters:
+    publish_rate_hz: 1.0
+    verify_map_hashes: true
+
+diesel_localization:
+  ros__parameters:
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_footprint
+    pose_source: auto
+    cloud_topic: /livox/lidar
+    odom_topic: /aft_mapped_to_init
+    external_pose_topic: /localization/external_pose
+    state_rate_hz: 50.0
+    tf_rate_hz: 20.0
+    align_rate_hz: 5.0
+    obstacle_rate_hz: 10.0
+    voxel_leaf_m: 0.12
+    map_voxel_leaf_m: 0.25
+    align_max_iterations: 15
+    align_max_correspondence_m: 0.60
+    residual_threshold_m: 0.35
+    cluster_tolerance_m: 0.35
+    min_cluster_size: 5
+    max_cluster_size: 600
+    ok_mean_residual_m: 0.16
+    degraded_mean_residual_m: 0.32
+    ok_inlier_ratio: 0.50
+    degraded_inlier_ratio: 0.32
+    lost_timeout_sec: 1.0
+    odom_timeout_sec: 0.5
+    lidar_timeout_sec: 0.2
+    warmup_frames: 3
+    recover_frames: 3
+    fov_horizontal_deg: 360.0
+    fov_vertical_deg: 180.0
+    fov_center_yaw_deg: 0.0
+    observability_ratio_threshold: 0.0
+    min_source_points: 0
+    max_unobservable_dofs: 6
+    profile_enabled: false
+    filter_enabled: false
+    filter_measurement_noise_m: 0.05
+    filter_unobservable_noise_scale: 10.0

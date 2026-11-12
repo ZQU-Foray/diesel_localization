@@ -42,7 +42,7 @@ Context: 3v3 中哨兵装 MID360，步兵/重装无雷达，由里程计/视觉�
 后续还要接 UWB、视觉位姿。
 
 Decision: 核心健康契约 `LocalizationState` 与位姿源无关，统一以
-`source`（`SENTRY_LIDAR` / `EXTERNAL_ODOM`）区分；`foray_localization_core`
+`source`（`SENTRY_LIDAR` / `EXTERNAL_ODOM`）区分；`diesel_localization_core`
 不依赖任何 ROS 类型。
 
 Reason:
@@ -64,8 +64,8 @@ Date: 2026-10-25
 Context: point_lio 支持先验 PCD，但每帧在 LIO 内更新地图会与「固定先验地图」目标冲突，
 且赛时不允许在线 SLAM。
 
-Decision: `point_lio` 只输出 `odom → lidar`；`foray_localization_map` 独立做
-先验地图 GICP（5 Hz），`foray_localization_ros` 合成 `map → odom`。
+Decision: `point_lio` 只输出 `odom → lidar`；`diesel_localization_map` 独立做
+先验地图 GICP（5 Hz），`diesel_localization_ros` 合成 `map → odom`。
 
 Reason:
 - 先验地图保持只读，避免漂移污染与资源竞争
@@ -180,10 +180,10 @@ Rejected:
 
 Date: 2026-10-25
 
-Context: `foray_platform` 目前只有 HAL C++ 库，没有 ROS 节点；本仓需要可独立构建。
+Context: `diesel_platform` 目前只有 HAL C++ 库，没有 ROS 节点；本仓需要可独立构建。
 
 Decision: 本仓订阅标准 `sensor_msgs/PointCloud2` / `nav_msgs/Odometry`；
-平台 HAL → ROS 的桥接由 X3（foray_robots/装配根）提供。`scan_adapter` 负责
+平台 HAL → ROS 的桥接由 X3（diesel_robots/装配根）提供。`scan_adapter` 负责
 frame/stamp/字段校验，不直接链接 HAL。
 
 Reason:
@@ -191,22 +191,22 @@ Reason:
 - 标准消息便于录包回放与仿真
 
 Alternatives:
-- 直接链接 `foray_platform` HAL 并自带驱动节点
+- 直接链接 `diesel_platform` HAL 并自带驱动节点
 
 Rejected:
 - 会把驱动/设备生命周期耦合进定位层，违反分层
 
 ---
 
-## D8 消息过渡期放在 foray_localization_ros，后续迁 X1
+## D8 消息过渡期放在 diesel_localization_ros，后续迁 X1
 
 Date: 2026-10-25
 
-Context: `foray_interfaces` 当前无 `package.xml`/rosidl，且不在本仓可写范围；
+Context: `diesel_interfaces` 当前无 `package.xml`/rosidl，且不在本仓可写范围；
 定位层开发不能因此停摆。
 
 Decision: 首版 `LocalizationState` / `MapMeta` / `DynamicObstacle(Array)` /
-`Relocalize` 定义在 `foray_localization_ros/msg|srv`，字段与 X1 0.2.0 对齐；
+`Relocalize` 定义在 `diesel_localization_ros/msg|srv`，字段与 X1 0.2.0 对齐；
 X1 落地后迁移并保留兼容别名。
 
 Reason:
@@ -227,15 +227,15 @@ Rejected:
 
 Date: 2026-10-25
 
-Context: `small_gicp` 未在 `foray_ws` pin，且无 rosdep key；PCL 在 ROS 2 Humble
+Context: `small_gicp` 未在 `diesel_ws` pin，且无 rosdep key；PCL 在 ROS 2 Humble
 环境稳定可用，CI 可直接安装。
 
-Decision: `foray_localization_map` 定义 `Aligner` 接口；
+Decision: `diesel_localization_map` 定义 `Aligner` 接口；
 本次实现 `IcpAligner`（内置点到点 ICP：角点网格最近邻 + SVD 位姿更新，
 带内点率/平均残差/fitness 评估）作为默认后端；
 `small_gicp` 与 PCL GICP 作为后续可插拔后端，通过同一接口接入。
 
-Revision (2026-10-25): 实现期本机与 CI 构建环境均无 PCL，`FORAY_WITH_PCL`
+Revision (2026-10-25): 实现期本机与 CI 构建环境均无 PCL，`DIESEL_WITH_PCL`
 未落地。为避免未验证代码进入关键路径，先交付可测试的内置 ICP，并保留
 `Aligner` 抽象；赛前实测若需要 GICP 精度，再接 PCL/small_gicp 后端。
 
@@ -249,7 +249,7 @@ Alternatives:
 - 只用内置 ICP
 
 Rejected:
-- 第三方源码入库增加升级/审计成本，且与 foray_ws pin 策略冲突
+- 第三方源码入库增加升级/审计成本，且与 diesel_ws pin 策略冲突
 - 内置 ICP 精度不足，不能作为赛场默认
 
 ---
@@ -260,8 +260,8 @@ Date: 2026-10-25
 
 Context: 用户要求计划考虑纯 CPU ONNX Runtime；许可证问题用户明确暂不考虑。
 
-Decision: `foray_localization_place`（2026-10-25 更名为
-`foray_localization_relocalization`，见 D12）用 ONNX Runtime CPU（`FORAY_WITH_ONNX=OFF` 默认），
+Decision: `diesel_localization_place`（2026-10-25 更名为
+`diesel_localization_relocalization`，见 D12）用 ONNX Runtime CPU（`DIESEL_WITH_ONNX=OFF` 默认），
 不引入 CUDA/TensorRT EP；定位主链不依赖 ONNX。许可证决策移出本期，
 `package.xml` 的 `<license>` 暂保持 `TODO`，待组织统一。
 
@@ -282,7 +282,7 @@ Rejected:
 ## D11 仿真闭环放在本仓、但不引入 Gazebo 构建依赖
 
 Status: **superseded by D16**（2026-10-27：仿真闭环与离线工具已整体移出本仓）。
-`foray_localization_sim` / `foray_localization_tools` / `bringup/config/sim.yaml` /
+`diesel_localization_sim` / `diesel_localization_tools` / `bringup/config/sim.yaml` /
 `docs/simulation.md` / CI `sim-smoke` 均已不存在，删除理由与失去的能力见 D16。
 
 Date: 2026-10-25
@@ -290,19 +290,19 @@ Date: 2026-10-25
 Context: M5 HIL 验证需要录包/仿真回放与 ATE/RPE、DEGRADED/LOST 时序验证，但此时无实车、
 机载无 GPU，且官方 Gazebo 场景（`rmu_gazebo_simulator` / `pb_rm_simulation`）版本演进快。
 
-Decision: 本仓只提供 `foray_localization_sim`（真值里程计注入 + 模式化 launch）与
-`foray_localization_tools` 的合成回放/评估脚本；Gazebo 场景与 Mid360 插件不入仓、不进构建
+Decision: 本仓只提供 `diesel_localization_sim`（真值里程计注入 + 模式化 launch）与
+`diesel_localization_tools` 的合成回放/评估脚本；Gazebo 场景与 Mid360 插件不入仓、不进构建
 依赖，按 `docs/simulation.md` 外部复现。合成闭环走「先验 PCD 射线投射 → 回放 + 定位节点 →
 `eval_trajectory.py` 断言 ATE/OK 占比」，CI `sim-smoke` 无 GPU 可跑；仿真阈值单放
 `bringup/config/sim.yaml`，不参与默认实车启动。
 
-Reason: 定位节点只认 `/livox/lidar`、`/aft_mapped_to_init`、TF，既不破 `.foray-layer` 的
+Reason: 定位节点只认 `/livox/lidar`、`/aft_mapped_to_init`、TF，既不破 `.diesel-layer` 的
 依赖方向，也不破「定位层不感知数据来源」的接口约定；Gazebo 进仓会把渲染/物理依赖带进定位层
 构建，与机载无 GPU 约束冲突；仿真阈值又只能初标（无动态物体、无遮挡、多为机械式扫描），
 实车结论仍以现场标定为准。
 
 Alternatives: 把 Gazebo 场景与插件 vendor 进本仓；只等实车、暂不做离车验证。
-Rejected: vendor 增加升级/审计成本且与 `foray_ws` pin 策略冲突；无实车期间没有任何可重复
+Rejected: vendor 增加升级/审计成本且与 `diesel_ws` pin 策略冲突；无实车期间没有任何可重复
 回归，M5 会长期空转。
 
 ---
@@ -313,21 +313,21 @@ Date: 2026-10-25
 
 Context: 组织统一「仓根 = colcon 空间根、全部包在 `src/`」的布局约定（`foray_docs`
 `repository_structure.md` §7.5 待登记），并要求核心包用 `_core`、角色后缀封闭词表。
-本仓 7 个包原先平铺在仓根，`foray_localization_place` 的后缀 `place` 不在词表内。
+本仓 7 个包原先平铺在仓根，`diesel_localization_place` 的后缀 `place` 不在词表内。
 
 Decision:
 - 7 个包全部迁入 `src/<package>/`，仓根不再有 `package.xml`；
-- `foray_localization_place` → `foray_localization_relocalization`，同步
-  `package.xml`、CMake `project`、命名空间 `foray::localization_relocalization`、
-  头文件目录 `include/foray/localization_relocalization/`、include guard；
+- `diesel_localization_place` → `diesel_localization_relocalization`，同步
+  `package.xml`、CMake `project`、命名空间 `diesel::localization_relocalization`、
+  头文件目录 `include/diesel/localization_relocalization/`、include guard；
 - 类名 `PlaceLocalizer` / `PlaceConfig` 与文件名保持（重定位手段仍是地点识别）；
-- CI 新增 `dir-layout` 作业，与 `foray_platform` 使用同一套规则。
+- CI 新增 `dir-layout` 作业，与 `diesel_platform` 使用同一套规则。
 
 Reason:
 - 与组织布局约定一致，`colcon build` / `rosdep install --from-paths src` 语义清晰；
 - 「重定位」比「地点识别」更贴合对外语义（服务名已是 `Relocalize`），且 `place`
   不在封闭后缀词表内；
-- 改名窗口只有现在：该包尚无下游消费方（已核对 `foray_localization_bringup`
+- 改名窗口只有现在：该包尚无下游消费方（已核对 `diesel_localization_bringup`
   不 `find_package` 它），成本最低。
 
 Alternatives:
@@ -416,10 +416,10 @@ Context: 审计 B3 实测 README「关键参数」表有 11 个参数名在源�
 README 是本仓唯一需求来源（AGENTS.md），这类漂移会让下游照文档写配置直接启动失败。
 
 Decision:
-- 以实现为准回写 README 参数表：拆成「本地化节点参数（`foray_localization`，30 项）」
-  与「地图服务节点参数（`foray_map_server`，3 项）」，**一行一个参数名、默认值抄自
+- 以实现为准回写 README 参数表：拆成「本地化节点参数（`diesel_localization`，30 项）」
+  与「地图服务节点参数（`diesel_map_server`，3 项）」，**一行一个参数名、默认值抄自
   `declare_parameter`**，便于机器解析；
-- 新增 `src/foray_localization_tools/scripts/check_param_consistency.py`，在 CI 的
+- 新增 `src/diesel_localization_tools/scripts/check_param_consistency.py`，在 CI 的
   `test-python` 作业里断言：README 参数名集合 == `declare_parameter` 集合；兵种配置键
   ⊆ 已声明参数；兵种配置键 ⊇ 已声明参数减去 launch 注入的 `{map_manifest, verify_map_hashes}`；
 - 配套 pytest（`test_param_consistency.py`）既跑真实仓库，也用 `tmp_path` 合成仓库证明
@@ -445,16 +445,16 @@ Rejected:
 Date: 2026-10-27
 
 Context: 用户要求「删除本仓库无意义的合成仿真，只保留核心定位算法」（m00001）。
-盘点发现仿真不是孤立脚本而是一条闭环：`foray_localization_sim`（真值里程计注入 +
-模式化 launch）、`foray_localization_tools`（合成场地生成、回放、累积建图、
+盘点发现仿真不是孤立脚本而是一条闭环：`diesel_localization_sim`（真值里程计注入 +
+模式化 launch）、`diesel_localization_tools`（合成场地生成、回放、累积建图、
 ATE/RPE 评估、参数一致性校验）、`bringup/config/sim.yaml`、`docs/simulation.md`，
 以及 CI 的 `sim-smoke` / `test-python` 两个作业。同时查出 `sim-smoke` 自 M7 起就是
-死作业：探测条件写的是仓根 `foray_localization_sim`，而包已迁入 `src/`，
+死作业：探测条件写的是仓根 `diesel_localization_sim`，而包已迁入 `src/`，
 `-d` 恒为假，作业从未执行过（证据：`local/evidence-strip-sim/ci-sim-smoke-skip-proof.txt`）。
 
 Decision:
-- 删除 `src/foray_localization_sim`（4 文件）、`src/foray_localization_tools`（18 文件）、
-  `src/foray_localization_bringup/config/sim.yaml`、`docs/simulation.md`、仓根
+- 删除 `src/diesel_localization_sim`（4 文件）、`src/diesel_localization_tools`（18 文件）、
+  `src/diesel_localization_bringup/config/sim.yaml`、`docs/simulation.md`、仓根
   `requirements.txt`；`src/` 只保留 `_core` / `_map` / `_ros` / `_relocalization` / `_bringup`。
 - CI 只保留真实执行的 4 个作业：`dir-layout` / `lint-python` / `lint-c` / `build-ros2`；
   删除 `sim-smoke`（恒跳过）与 `test-python`（已无 `test_*.py`）。
@@ -482,14 +482,14 @@ Compensation（明确记下失去的能力）:
 - 失去 **仓内建图与地图校验工具**（`make_map.py` / `validate_map.py` /
   `accumulate_pcd.py`）：地图改在仓外制作，本仓只按 `manifest.yaml` 契约加载并校验 SHA-256。
 - 失去 **离车精度回归**（ATE/RPE）：精度验收移到实车与下游仿真仓，本仓不再提供自动化精度断言。
-  > 现况（2026-10-30）：承接方 `foray_simulation` 已建成，并把这条精度验收写成自己的需求 A2
+  > 现况（2026-10-30）：承接方 `diesel_simulation` 已建成，并把这条精度验收写成自己的需求 A2
   > （本仓在仿真里 10 s 内状态 `OK`、位置误差 < 0.30 m、朝向误差 < 5°），已取证：首次 `OK`
   > 3.78 s、位姿误差 0.083 m、`yaw` 0.012°，95 s 采样 4737 条状态中 4423 条 `OK` 且零
   > `DEGRADED`/`LOST`。因此本仓的回归通道是「容器内 `colcon test` 跑全套单元测试（2026-10-30
   > 实测 73 tests / 0 failures）+ 需要时跑 A2 整链」，不需要把仿真能力搬回本仓。
 
 Alternatives:
-- 保留 `foray_localization_tools` 只删 `foray_localization_sim`（用户评估后否决）；
+- 保留 `diesel_localization_tools` 只删 `diesel_localization_sim`（用户评估后否决）；
 - 保留工具包但删掉其测试与 CI 作业（会留下无测试的 Python 代码，更差）；
 - 只修 `sim-smoke` 的 `src/` 前缀让死作业复活（用户目标是删除仿真，不是修仿真）。
 
@@ -546,7 +546,7 @@ Decision:
 Reason:
 - 这四类约束原文都写在 AGENTS.md / README / D15 里，但**只有能被机器执行的那部分才会
   长期生效**。写在文档里的规则，在 AI 高频提交下退化成「写的时候想过」。
-- 选零依赖而非恢复 `foray_localization_tools`（D16 已删除）：门禁的价值在于**任何机器上
+- 选零依赖而非恢复 `diesel_localization_tools`（D16 已删除）：门禁的价值在于**任何机器上
   一条命令就能跑**，包括没有装 pyproject 依赖的 CI runner 与 AI agent 的临时容器。
   恢复工具包会把「跑一下门禁」重新变成「先配环境」。
 - 双向检查而非单向：只查「文档写了但文件不存在」会漏掉新增未记录（最常见），
@@ -580,7 +580,7 @@ Evidence:
 Alternatives:
 - 用 pre-commit 框架统一管理钩子——需要每台机器 `pre-commit install`，AI agent 的
   一次性容器里通常没有；CI 才是唯一无法绕过的关口。
-- 恢复 `foray_localization_tools` 并用 pytest 承载这些断言——与 D16 的删除决定冲突，
+- 恢复 `diesel_localization_tools` 并用 pytest 承载这些断言——与 D16 的删除决定冲突，
   且把这些断言绑回一个本该只有算法的包里。
 - 只做 Git 本地钩子——本地可 `--no-verify` 绕过，跨机器不同步，保护不了 PR。
 
@@ -624,7 +624,7 @@ Date: 2026-10-30
 
 Context: PR #3 首次真实运行 CI（run 40913190187），7 个作业通过，`lint-c`（10 s）与
 `lint-python`（13 s）红：
-`src/foray_localization_ros/src/localization_node.cpp:345:42` 与 `:346:72` 报
+`src/diesel_localization_ros/src/localization_node.cpp:345:42` 与 `:346:72` 报
 `code should be clang-formatted [-Wclang-format-violations]`；`ruff` 报 5 次
 `EXE001`（Shebang is present but file is not executable），指向 `scripts/ci/` 全部五个脚本。
 值得记下的是本地当时的判断：用 clang-format 23.1.4 跑 `--dry-run` 发现 HEAD 版本同样报错，
@@ -662,15 +662,15 @@ Rejected: 静音会把「脚本不可执行」这一真实缺陷永久藏起来�
 Date: 2026-10-30
 
 Context: README 从首版起就写「配准做 GICP（默认 PCL GICP）」，但仓内只有
-`IcpAligner`（点到点 ICP）：全仓 `FORAY_WITH_PCL` / `find_package(PCL)` / `gicp` 一处都没有，
-`src/foray_localization_ros/src/localization_node.cpp` 里直接构造的是
-`foray::localization_map::IcpAligner`。D9 当年已记下「PCL 未安装、首版先用内置 ICP 兜底」，
+`IcpAligner`（点到点 ICP）：全仓 `DIESEL_WITH_PCL` / `find_package(PCL)` / `gicp` 一处都没有，
+`src/diesel_localization_ros/src/localization_node.cpp` 里直接构造的是
+`diesel::localization_map::IcpAligner`。D9 当年已记下「PCL 未安装、首版先用内置 ICP 兜底」，
 而那只是**临时状态被写成了长期口径**：文档描述的能力实际不存在，属文档与实现不一致，
 不是实现落后于文档。2026-10-30 用户裁定「实装 PCL GICP」，这条决策把它落地。
 
 Decision:
 - 新增 `PclGicpAligner`（`pcl::GeneralizedIterativeClosestPoint<PointXYZ, PointXYZ>`），
-  后端选择做成**编译期开关 + 工厂**：`option(FORAY_WITH_PCL ON)` 决定是否编译该后端，
+  后端选择做成**编译期开关 + 工厂**：`option(DIESEL_WITH_PCL ON)` 决定是否编译该后端，
   `make_aligner()` 返回 `std::unique_ptr<Aligner>`，`default_aligner_name()` 供节点打日志。
   `#if` 只出现在 `aligner_factory.cpp` 与 `pcl_gicp_aligner.cpp`，不泄进 ROS 包。
 - 默认 ON；ON 时 `find_package(PCL 1.10 REQUIRED COMPONENTS common registration)`，
@@ -681,7 +681,7 @@ Decision:
 - 每帧新建 GICP 对象，不做 target 预处理缓存；`iterations` 直接读公开成员
   `nr_iterations_`；不新增任何 ROS 参数（`max_iterations` / `max_correspondence_distance_m` /
   `transformation_epsilon_m` 一对一映射到 PCL setter，`correspondence_randomness` 留 PCL 默认 20）。
-- CI 增 `build-nopcl` 作业跑 `-DFORAY_WITH_PCL=OFF`，作业数 9 → 10。
+- CI 增 `build-nopcl` 作业跑 `-DDIESEL_WITH_PCL=OFF`，作业数 9 → 10。
 
 Reason:
 - **语义相反，绝不能直接填**：PCL 的 `getFitnessScore()` 是均方误差（越小越好），
@@ -703,7 +703,7 @@ Rejected: 运行时选后端要求二进制永远带 PCL，既没省依赖又多
 Consequences:
 - 构建从「Eigen + yaml-cpp」变成**需要 PCL ≥ 1.10**（`package.xml` 用 rosdep key
   `libpcl-all-dev`，映射 apt `libpcl-dev`；容器与 CI 已验证 1.12）。
-- `-DFORAY_WITH_PCL=OFF` 路径由 CI `build-nopcl` 守护；只验一条路径等于另一条迟早烂掉。
+- `-DDIESEL_WITH_PCL=OFF` 路径由 CI `build-nopcl` 守护；只验一条路径等于另一条迟早烂掉。
 - **已知代价**：target 协方差每帧重算，地图点数大时可能吃掉 5 Hz 预算。节点已按
   `map_voxel_leaf_m`（默认 0.25）对地图降采样，实测本仓口径下 map 包 34 tests 全绿、
   单帧耗时未超预算，但**没有实车/实图数据**，所以 p99 ≤ 40 ms 的验收项保持未勾选，
@@ -714,13 +714,13 @@ Consequences:
   （见 Rejected）。是否把索引也做跨帧缓存，与上一条一起等实测数据。
 - 平台面：默认 ON 让 PCL 成为硬依赖，而 PCL 在 Windows 上要另走 vcpkg。Windows/MSVC 构建
   本仓从未验证过（CI 全在 Linux 容器），因此 README 只声明「验证过的环境是 Linux」，
-  并指出 Windows 上先用 `-DFORAY_WITH_PCL=OFF` 摘掉 PCL 再谈构建；`pcl_gicp_aligner.cpp`
+  并指出 Windows 上先用 `-DDIESEL_WITH_PCL=OFF` 摘掉 PCL 再谈构建；`pcl_gicp_aligner.cpp`
   里的中文 error 字面量在 MSVC 下需要 `/utf-8`，这条留给真正做 Windows 构建时一并验证，
   不在此刻凭空加一个没人跑过的编译选项。检出侧与门禁侧不受影响：`.gitattributes` 已钉 LF，
   `check_style.py` 按字节判 CRLF，`scripts/ci/` 与 pytest 自检在 Windows 上可正常运行。
 
 状态：已执行（2026-10-30）。容器实测（本仓 5 个包，`colcon test-result` 汇总）：默认 ON
-75 tests / 0 failures，`-DFORAY_WITH_PCL=OFF` 70 tests / 0 failures；差的那 5 条正是
+75 tests / 0 failures，`-DDIESEL_WITH_PCL=OFF` 70 tests / 0 failures；差的那 5 条正是
 `test_pcl_gicp`（4 个用例 + 该文件在 CTest 里的汇总条目），map 包单独口径 ON 34 / OFF 29。
 
 ---
@@ -739,7 +739,7 @@ Context: 仿真里换成 PCL GICP 后端后，定位节点始终进不了 `OK`�
 Decision: `ok_mean_residual_m` 0.10 → 0.15，`degraded_mean_residual_m` 0.20 → 0.30
 （`heavy.yaml` 按同比例 0.12/0.24 → 0.16/0.32）。三处必须同步：`HealthConfig` 的成员
 默认值（`health.hpp`）、节点的 `declare_parameter` 默认值、以及
-`src/foray_localization_bringup/config/*.yaml` 三份兵种配置——`check_params.py`
+`src/diesel_localization_bringup/config/*.yaml` 三份兵种配置——`check_params.py`
 就是来锁这三处一致性的，改一处漏一处 CI 会红。
 
 Reason: 阈值量的东西和地图的离散度是同一个量纲。先验图按 `map_voxel_leaf_m`（默认
@@ -784,7 +784,7 @@ FOV 裁切（`grep crop|roi|max_range` 零命中），也没有任何可观性�
 `inlier_ratio == 0` → 该帧整体否决 → 健康状态往下掉。视野一裁，内点变少、几何约束变弱，
 这条「要么全信、要么全拒」的路径会直接退化成不可用。
 
-Decision: 在 `foray_localization_map` 增加可观测性分析：在配准收敛位姿上，用**点面残差**构造
+Decision: 在 `diesel_localization_map` 增加可观测性分析：在配准收敛位姿上，用**点面残差**构造
 6×6 信息矩阵 `H = Σ Jᵢᵀ Jᵢ / σᵢ²`（`Jᵢ = [nᵢᵀ, (pᵢ × nᵢ)ᵀ]`），对 `H` 做特征分解，把特征值
 归一化后低于阈值的特征向量标为「不可观方向」，并在更新 `map → odom` 时把修正量投影到可观
 子空间——**不可观方向保留里程计外推，可观方向照常接受修正**。
@@ -821,7 +821,7 @@ Context: `localization_node.cpp` 现在是直通——每次配准成功就 `map
 意味着每 200 ms `map → odom` 阶跃一次，中间全靠点云里程计外推；跳变会直接传到下游的规划与
 costmap。
 
-Decision: 在 `foray_localization_core` 增加 6 维 EKF（位置 + 姿态），状态是 `map → odom`，
+Decision: 在 `diesel_localization_core` 增加 6 维 EKF（位置 + 姿态），状态是 `map → odom`，
 预测用**常值模型**（两次配准之间 `map → odom` 应当不变，运动由里程计承担），过程噪声随 dt 增长；
 量测是每帧配准给出的 `map → odom`，量测噪声按残差项与 D23 的逐方向特征值放大。
 配准与预测偏离超过阈值时判为重定位、直接硬切覆盖；`/localization/relocalize` 触发重置；
@@ -859,7 +859,7 @@ Decision: 先加分段计时（`profile_enabled`，默认关）拿到 `to_point_
 evaluate / cluster` 各阶段真实耗时，再按数据排序动手；每一项独立提交、可单独 revert。
 第三方方面，`small_gicp`（MIT、header-only、只依赖 Eigen + bundled nanoflann/Sophus，
 官方基准 GICP 比 `pcl::GICP` 快约 2.4×、并行降采样快约 3.2×，并直接暴露 6×6 Hessian `result.H`）
-只作为**可选的编译期后端** `FORAY_WITH_SMALL_GICP`（默认 OFF）评估，填进现有 `make_aligner`
+只作为**可选的编译期后端** `DIESEL_WITH_SMALL_GICP`（默认 OFF）评估，填进现有 `make_aligner`
 工厂，不改变默认构建。
 
 Reason: 没有基线数据的「优化」无法验证，也无法在 PR 里自证；而引入第三方库必须能被收益证明
@@ -922,7 +922,7 @@ Consequences: 兵种配置可以放心用小视场（例如仅保留下半视场
 ## D27 性能：GICP 对象跨帧复用 + 事后 profile，不引入 small_gicp
 
 Context: i6 要求在不动依赖的前提下拿性能。离线基准（真实 `rmul_2027.pcd` 0.25 m 体素 target
-4137 点、每帧换一块区域的 source、20 帧取均值，容器内 `foray_sim_gui`）暴露出 D21 的一条
+4137 点、每帧换一块区域的 source、20 帧取均值，容器内 `diesel_sim_gui`）暴露出 D21 的一条
 判断是错的：D21 写「复用同一对象跨帧就等于让 source 协方差与新 source 错配」，据此选择了
 每帧新建 GICP。
 
@@ -976,7 +976,7 @@ Consequences: 配准单帧从 ~73 ms 降到 ~31 ms（本机、Onboard model 量�
 
 ## D28 审计整改只改根因：不新增参数、不改契约、不补静默兜底
 
-Context: `audit/tasks/02-foray_localization.md` 对 `feat/fov-observability-ekf` @ `25e5bf9`
+Context: `audit/tasks/02-diesel_localization.md` 对 `feat/fov-observability-ekf` @ `25e5bf9`
 列出 20 条发现（1 blocker + 6 high + 11 medium + 2 low），审计方的一句话结论是
 「算法本身写得不错，问题全在 ROS 边界，而且到处都在静默降级」。任务书同时给了硬约束：
 一条发现一个提交、每条都要留下能复现「改前坏」的离线回执、不许改测试期望值来让测试变绿。
@@ -1002,13 +1002,13 @@ Alternatives: 顺势把新语义做成 ROS 参数（可现场调）；顺带把 
 承载协方差/来源明细；直接引第三方定位框架替换节点层。
 Rejected: 加参数会把「安全旋钮有没有生效」这件事再外包给配置文件，本轮恰恰是要删掉这类
 隐性开关（L5 就是两个参数声明晚了一行的后果）；改 msg 会触发 `contract-lock` 与下游
-`foray_platform` 的同步，收益与风险不匹配，协方差用现有 `PoseWithCovariance` 就能表达；
+`diesel_platform` 的同步，收益与风险不匹配，协方差用现有 `PoseWithCovariance` 就能表达；
 替换框架不是整改，是重写。
 
 Consequences:
 - 后续 D30 起的整改条目都受本条约束：能用内部结构表达的一律不新增参数，能用现有 msg
   字段表达的一律不改契约。
-- 每条整改都要连带一个测试；`foray_localization_ros` 的测试从 2 个文件涨到 3 个以上，
+- 每条整改都要连带一个测试；`diesel_localization_ros` 的测试从 2 个文件涨到 3 个以上，
   构建时间与 `colcon test` 时长随之上升（节点级用例靠 `TIMEOUT` 兜底）。
 - 回报里必须区分「已修（有回执）」「未修（有理由）」，不允许「看起来修好了」。
 
@@ -1021,16 +1021,16 @@ Consequences:
 Context: 整改的 P0（L1）与三条 high（L2/L4/L5）验收条件都是**集成级**的——
 「注入 100–200 ms 配准耗时后不再出现 odom timeout」「地图加载失败时 `map → odom` 一帧都不发」
 「`pose_source: auto` 且雷达断流时才接受外部位姿」「`min_source_points: 200` + 30 点云要
-`DEGRADED`」。但 `foray_localization_ros` 只有一个 `conversion.cpp` + `adapters.cpp` 的库，
+`DEGRADED`」。但 `diesel_localization_ros` 只有一个 `conversion.cpp` + `adapters.cpp` 的库，
 `localization_node.cpp` 直接挂在 `add_executable` 下，测试不但构造不到节点，连符号都拿不到：
 父提交上把测试文件加进去、只把节点从库里摘掉，链接直接报
-`undefined reference to 'foray::localization_ros::LocalizationNode::LocalizationNode(
-rclcpp::NodeOptions const&, std::unique_ptr<foray::localization_map::Aligner>)'`。
+`undefined reference to 'diesel::localization_ros::LocalizationNode::LocalizationNode(
+rclcpp::NodeOptions const&, std::unique_ptr<diesel::localization_map::Aligner>)'`。
 
 Decision:
-1. `localization_node.cpp` 移入 `foray_localization_ros_lib`，`localization_node` 可执行文件
+1. `localization_node.cpp` 移入 `diesel_localization_ros_lib`，`localization_node` 可执行文件
    只保留 `localization_node_main.cpp`；安装产物（可执行位置、库名）不变。
-2. 构造函数增加第二个参数 `std::unique_ptr<foray::localization_map::Aligner> aligner = nullptr`：
+2. 构造函数增加第二个参数 `std::unique_ptr<diesel::localization_map::Aligner> aligner = nullptr`：
    非空即替代 `make_aligner()`，并打印「配准后端: 注入（测试）」。生产入口不传，行为不变。
 3. 节点新增公开的 `Diagnostics` 结构（`odom_received / odom_processed / max_odom_lag_sec /
    align_runs / max_align_ms / tf_published`）与 `diagnostics()`；`max_odom_lag_sec` 是
@@ -1049,7 +1049,7 @@ Rejected: `launch_testing` 拿不到节点内部计数，回放还依赖包体�
 这种「文案当契约」。
 
 Consequences:
-- `foray_localization_ros_lib` 的符号面变大（含节点），但它是仓内包、不对外承诺 ABI。
+- `diesel_localization_ros_lib` 的符号面变大（含节点），但它是仓内包、不对外承诺 ABI。
 - `Diagnostics` 是「测试与运维共用」的观测面：读时持 `mutex_`，不能在回调内部再调用它。
 - 夹具里刻意用 `MultiThreadedExecutor`：生产入口也是它，用单线程执行器就测不出 D30 的
   回调组划分是否真的解开了阻塞。
@@ -1156,7 +1156,7 @@ Alternatives: 发恒等矩阵 + `WARN`（审计明令禁止）；把 `map → od
 Rejected: 前者把「没有地图」降级成日志；后者会把 20 Hz TF 变成 5 Hz，违反 README 接口表。
 
 Consequences:
-- 没有地图时 `/tf` 上根本没有 `map → odom`，`foray_navigation` 的启动顺序必须容忍这一点
+- 没有地图时 `/tf` 上根本没有 `map → odom`，`diesel_navigation` 的启动顺序必须容忍这一点
   （它本来就要求先判 `pose_valid`）。
 - 地图加载失败后节点不再「看起来在正常工作」：这是有意为之，属于 D28 ①的「响亮地失败」。
 - `load_map()` 只在构造期调用，`mark_map_unavailable()` 因此不需要额外的「重试/恢复」路径；
@@ -1356,7 +1356,7 @@ Consequences:
 
 ## D42 点云「消费」发生在放锁之前，`/tf` 用那一帧点云的时刻打戳
 
-问题（`audit/tasks/02-foray_localization.md` L6）：`on_align_timer()` 在放锁跑完配准之后
+问题（`audit/tasks/02-diesel_localization.md` L6）：`on_align_timer()` 在放锁跑完配准之后
 才无条件 `has_cloud_ = false`。配准要 30–200 ms，这期间的每一帧新点云都在 `on_cloud`
 里被写进 `latest_cloud_` 并置 `has_cloud_ = true`，然后又被配准结束时那句
 `has_cloud_ = false` 一句话抹掉——「没被配过」的帧被记成「已经配过了」。
@@ -1889,12 +1889,12 @@ Context: 20 条审计发现各自的验收用例散在 18 个 gtest 结果文件
 `build-nopcl` 作业同样只认退出码，等于「用例在不在」这件事没有任何东西守护。
 
 Decision: 新增 `scripts/ci/test_ros_results.py`（pytest 收集，仅标准库 + pytest）：
-1. 定位结果根目录：`FORAY_RESULTS_ROOT` → 仓库根下的 `build/` → 从仓库根逐级向上的
+1. 定位结果根目录：`DIESEL_RESULTS_ROOT` → 仓库根下的 `build/` → 从仓库根逐级向上的
    `build/`（docker 里仓库在 `/ws/src/...`、构建在 `/ws/build`，不写死路径）。
 2. 逐文件校验 gtest XML 自洽：`failures`/`errors` 为 0，且汇总的 `tests` 数与列出的
    `testcase` 数相等——「用例少列了」本身就会被抓出来。
 3. 按**名字**断言 20 条发现的验收用例都在（`REQUIRED_CASES` 把用例名映射回发现编号），
-   L14 的两条放在 `PCL_CASES`，只在结果里出现 `pcl_gicp` 时才要求（`FORAY_WITH_PCL=OFF`
+   L14 的两条放在 `PCL_CASES`，只在结果里出现 `pcl_gicp` 时才要求（`DIESEL_WITH_PCL=OFF`
    构建上 skip）。
 4. 入口命令固定为 `python3 -m pytest scripts/ci/test_ros_results.py -q`，与门禁自检
    `test_guards.py` 同一套收集方式。
@@ -1917,7 +1917,7 @@ Consequences:
 - 新增用例要记得同时进 `REQUIRED_CASES`，否则它只是「跑过」而不受守护——这条写进文件
   头注释，避免下一个人加完用例就结束。
 - 回执：PCL ON 构建 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed in 0.02s`；
-  `FORAY_RESULTS_ROOT=/ws/build-nopcl` 时 `17 个 / 117 个` + `2 passed, 1 skipped`
+  `DIESEL_RESULTS_ROOT=/ws/build-nopcl` 时 `17 个 / 117 个` + `2 passed, 1 skipped`
   （跳过的是 L14 两条，因为该构建没有 PCL 后端）。
 
 状态：已实现（2026-11-03）。
@@ -1966,7 +1966,7 @@ Consequences:
 - 实车链**不是**「本来就有、无需管」：`point_lio` 从来不发布 `body` 的 TF（它只把 `body` 写进
   odom 的 `child_frame_id` 与点云 header），所以实车同样缺这条父级，只是没人在实车链上跑过
   定位。谁在实车上补（`robot_state_publisher` 的 URDF 关节，还是厂商驱动给出的外参）要在
-  实车 launch 里落实——这是 `foray_simulation` 与其上游的活，本仓只声明「我要它存在」。
+  实车 launch 里落实——这是 `diesel_simulation` 与其上游的活，本仓只声明「我要它存在」。
 - 本仓 README 的 `### TF` 表目前只有 `map → odom`、`odom → lidar`、`base_footprint → lidar`
   三行，没有点云帧这一层：需求文档缺的不是实现，而是「本节点要求 `base_frame ← 点云帧` 的
   TF 存在」这句话。这条补在 i2 里一起改（同一次改动把 D56/D57 的契约部分写进 README）。

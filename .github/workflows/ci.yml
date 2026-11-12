@@ -11,21 +11,21 @@
 #   lint-python     Python 语法/格式（本仓仅剩 bringup launch 的 .py）
 #   lint-c          C/C++ 格式
 #   build-ros2      colcon 构建 + ros2 pkg executables + launch 解析 + colcon test
-#                   （FORAY_WITH_PCL 默认 ON，因此这条作业同时守护 PCL GICP 主路径）
-#   build-nopcl     -DFORAY_WITH_PCL=OFF 的构建与测试，守护内置 ICP 回退路径
+#                   （DIESEL_WITH_PCL 默认 ON，因此这条作业同时守护 PCL GICP 主路径）
+#   build-nopcl     -DDIESEL_WITH_PCL=OFF 的构建与测试，守护内置 ICP 回退路径
 #
 # 更新记录：
-#   - 新增 build-nopcl（决定见 decision.md D21）：FORAY_WITH_PCL=OFF 是显式的降级出口，
+#   - 新增 build-nopcl（决定见 decision.md D21）：DIESEL_WITH_PCL=OFF 是显式的降级出口，
 #     没有作业跑它就等于没人知道它还能不能编译。已踩过的教训是同类的 optional 后端
 #     只在一条路径上验证，另一条直到用户遇到才坏。
 #   - 新增 file-hygiene / doc-sync / param-contract / contract-lock 四个作业
 #     （决定见 decision.md D18）。它们把 AGENTS.md 与 README 里原本靠人眼维持的约束变成
 #     可执行断言，依据是 D15 的结论：文档漂移靠人眼 Review 抓不住，只有可执行断言能长期生效。
 #     实现放在仓级 `scripts/ci/`，只用 Python 标准库，不恢复已删除的 Python 工具包。
-#   - 删除 sim-smoke：探测条件写的是仓根 `foray_localization_sim`，而包在
-#     `src/foray_localization_sim`（M7 迁入），求值恒为 found=false，作业自始至终
+#   - 删除 sim-smoke：探测条件写的是仓根 `diesel_localization_sim`，而包在
+#     `src/diesel_localization_sim`（M7 迁入），求值恒为 found=false，作业自始至终
 #     被跳过、从未保护过任何东西。合成仿真链路已整体移出本仓。
-#   - 删除 test-python：Python 测试随 `foray_localization_tools` 一并移除，仓内已无
+#   - 删除 test-python：Python 测试随 `diesel_localization_tools` 一并移除，仓内已无
 #     `test_*.py`；`check_param_consistency.py` 也被删除（决定见 decision.md D16）。
 #     该约束已于 D18 由 `param-contract` 作业以零依赖方式恢复。
 #   - dir-layout 的豁免词表只保留 `*_bringup`（装配包，无 include/ 与 test/）。
@@ -40,7 +40,7 @@ on:
 
 jobs:
   # ---- 目录与包命名规范 ----
-  # 规则与 foray_platform 一致：仓根 = colcon 空间根，全部包在 src/ 下。
+  # 规则与 diesel_platform 一致：仓根 = colcon 空间根，全部包在 src/ 下。
   # *_bringup 是装配包，不要求 include/ 与 test/。
   dir-layout:
     runs-on: ubuntu-latest
@@ -256,12 +256,12 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash
           source install/setup.bash
-          ros2 pkg executables foray_localization_ros | tee /tmp/exes.txt
+          ros2 pkg executables diesel_localization_ros | tee /tmp/exes.txt
           for exe in localization_node map_server_node; do
-            grep -qx "foray_localization_ros $exe" /tmp/exes.txt \
+            grep -qx "diesel_localization_ros $exe" /tmp/exes.txt \
               || { echo "::error::ros2 pkg executables 缺少 $exe（install RUNTIME 目录应为 lib/<pkg>/）"; exit 1; }
           done
-          ros2 launch foray_localization_bringup localization.launch.py --show-args
+          ros2 launch diesel_localization_bringup localization.launch.py --show-args
 
       - name: 测试 (colcon test)
         if: steps.detect.outputs.found == 'true'
@@ -273,7 +273,7 @@ jobs:
           colcon test-result --verbose
 
   # ---- 无 PCL 回退路径 ----
-  # FORAY_WITH_PCL=OFF 时只编译内置 ICP 后端。这条路径是降级出口（decision.md D21），
+  # DIESEL_WITH_PCL=OFF 时只编译内置 ICP 后端。这条路径是降级出口（decision.md D21），
   # 必须有人跑，否则会悄悄腐烂到用户真需要时才炸。只构建 map/ros 两包：其余包与本开关无关。
   build-nopcl:
     runs-on: ubuntu-22.04
@@ -300,13 +300,13 @@ jobs:
           rosdep update
           rosdep install -y -r --from-paths . --ignore-src --rosdistro humble
 
-      - name: 构建 (FORAY_WITH_PCL=OFF)
+      - name: 构建 (DIESEL_WITH_PCL=OFF)
         if: steps.detect.outputs.found == 'true'
         shell: bash
         run: |
           source /opt/ros/humble/setup.bash
           colcon build --symlink-install \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release -DFORAY_WITH_PCL=OFF
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DDIESEL_WITH_PCL=OFF
 
       - name: 测试 (colcon test)
         if: steps.detect.outputs.found == 'true'
