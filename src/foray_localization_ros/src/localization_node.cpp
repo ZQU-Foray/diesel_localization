@@ -551,11 +551,10 @@ void LocalizationNode::maybe_flush_profile(std::int64_t now_ns) {
                 frames, frames / seconds);
     // 点数漏斗与耗时同一窗口：审计 L7 的问题是「配准无有效对应」，那条日志里的
     // source=64~70 才是病因，耗时全在正常范围。没有这条，现场只能怀疑体素或地图覆盖。
-    RCLCPP_INFO(get_logger(),
-                "点数漏斗: raw=%.0f crop=%.0f voxel=%.0f align_source=%.0f align_target=%.0f",
-                profile_.raw_points / frames, profile_.crop_points / frames,
-                profile_.voxel_points / frames, profile_.align_source / frames,
-                profile_.align_target / frames);
+    RCLCPP_INFO(
+        get_logger(), "点数漏斗: raw=%.0f crop=%.0f voxel=%.0f align_source=%.0f align_target=%.0f",
+        profile_.raw_points / frames, profile_.crop_points / frames, profile_.voxel_points / frames,
+        profile_.align_source / frames, profile_.align_target / frames);
     profile_ = ProfileTotals{};
 }
 

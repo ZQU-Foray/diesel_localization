@@ -269,9 +269,10 @@ HealthStatus HealthMonitor::update(const RegistrationSample& sample, Timestamp n
                     transition(HealthState::kLost, "registration quality lost", now_ns);
                 } else if (bad_age >= config_.degraded_hold_sec) {
                     // 降级理由要能直接指向原因：现场只看到「degraded」是排查不了的。
-                    const char* why = !quality.points_ok       ? "insufficient source points"
-                                      : !quality.observable_ok ? "insufficient observability"
-                                                               : "residual or inlier ratio out of bounds";
+                    const char* why = !quality.points_ok ? "insufficient source points"
+                                      : !quality.observable_ok
+                                          ? "insufficient observability"
+                                          : "residual or inlier ratio out of bounds";
                     transition(HealthState::kDegraded, why, now_ns);
                 }
             }
