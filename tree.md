@@ -27,8 +27,8 @@
 .
 ├── README.md                      本仓定位、接口、坐标系、地图与健康契约
 ├── AGENTS.md                      AI 协作规范
-├── plan.md                        开发计划（M0–M8、P2 可选；完成状态以文件内勾选为准）
-├── decision.md                    关键工程决策（D1–D19；D17 为空号，缘由见 D18 编号说明）
+├── plan.md                        开发计划（M0–M12 与 P2 可选；完成状态以文件内勾选为准）
+├── decision.md                    关键工程决策（D1–D61；D17 为空号，缘由见 D18 编号说明）
 ├── tree.md                        本文件
 ├── CODEOWNERS                     Review 自动分派
 ├── .diesel-layer                   所属层与依赖边界（CI 校验）
@@ -144,7 +144,7 @@
 │   │       ├── test_localization_node.cpp          在进程内构造主节点跑状态/配准/诊断
 │   │       └── test_localization_node_map_errors.cpp  地图不可用时一帧 TF 都不发
 │   │
-│   ├── diesel_localization_relocalization/  可选 ONNX Runtime CPU 重定位（默认 OFF）
+│   ├── diesel_localization_relocalization/  全局重定位骨架（接口就位、推理未实现，P2 预留，默认 OFF）
 │   │   ├── CMakeLists.txt
 │   │   ├── package.xml
 │   │   ├── include/diesel/localization_relocalization/place_localizer.hpp

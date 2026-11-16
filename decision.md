@@ -2124,3 +2124,58 @@ Consequences:
 source_frame does not exist. '`；对照整改前同一注入下 `last_state=INITIALIZING`。
 
 状态：已实现（2026-11-11，`plan.md` M11 i2）。
+
+---
+
+## D61 仓内命名迁移到 Diesel，自身话题改相对名由装配层决定全名
+
+Date: 2026-11-12
+
+Context: 组织级命名决策（`foray_docs/diesel_naming_migration.md`，discussion #6 投票 2:0）
+把上位机软件系统定名 **Diesel**、战队名 `Foray` 保留，11 个上位机仓统一改 `diesel_` 前缀。
+本仓原为 `foray_localization`：ROS 包 `foray_localization_{core,map,ros,relocalization,bringup}`、
+C++ 命名空间 `foray::localization*`、头文件 `include/foray/...`、层级文件 `.foray-layer`；
+对外接口是**绝对名** `/localization/{state,map_meta,dynamic_obstacles}` 与
+`/localization/relocalize`。同期装配层开始走 `/diesel/<robot>` 多机命名空间。
+
+Decision: ①仓名、包名、命名空间、头文件目录、层级文件全部跟随组织命名迁移；
+②**对外 3 个话题 + 1 个服务改为相对名**（`localization/state` 等），全名 = 节点 namespace +
+相对名；③**上游 3 个话题仍是绝对名参数**（`cloud_topic` / `odom_topic` /
+`external_pose_topic`），由 launch 覆盖；④TF 帧名（`map` / `odom` / `base_footprint` /
+`body`）**不进 namespace**；⑤本仓 launch **不带** `namespace` 参数，注入由装配仓
+（`diesel_robots`）在 include 时用 `PushRosNamespace` 完成。
+
+Reason:
+- 同一份 launch 要能在多机、`/diesel/<robot>` 下并存：全名若写死绝对路径，第二台机器人的
+  节点只能靠 remap 区分，配置会按机器人数线性膨胀；
+- 本仓**不知道** robot 名，也不该知道——把名字来源收敛到装配层，是 `AGENTS.md`
+  「一个事实只在一处」的直接推论（同 D56/D60 的取舍方向）；
+- namespace 是 ROS 2 原生机制，`ros2 node info` / `ros2 topic list` 下天然分组，
+  比 launcher 侧字符串拼接更不容易写错前导斜杠；
+- 根命名空间下相对名仍解析成 `/localization/*`，单元测试与 `ros2 run` 的既有用法不受影响，
+  迁移对不关心 namespace 的使用者是**零行为变化**。
+
+Alternatives:
+- 保留绝对名 + 装配层 remap —— 否决：remap 只在「按那份 launch 启动」时生效，
+  直接 `ros2 run` 或进程内构造节点（本仓节点级测试就是这样跑的）又回到根命名空间，
+  同一份代码对外名字随启动方式变化，排查时得先问「你是怎么起的」；
+- 由新增参数 `robot_name` 在本仓拼全名 —— 否决：与 ROS 2 namespace 机制重复，
+  还要自己处理前导斜杠与空值，且把机器人编制知识漏进定位仓；
+- 只改包名前缀、话题维持绝对名 —— 否决：命名迁移的目的就是多机并存，
+  迁一半留下的是两套约定并存的最坏状态。
+
+Rejected:
+- 正则批量替换而不更新 `contracts.sha256` —— 否决：`contract-lock` 快照会与接口文件脱节，
+  门禁从「看守」退化成「装饰」（D18 恢复该门禁的前提就是快照必须真跟得上）。
+
+Consequences:
+- 下游订阅必须靠 namespace 解析全名，写死 `/localization/state` 的旧代码会静默收不到
+  （`transient_local` 的 `state` 重发也救不回来，因为话题就不在那个名字上）；
+- `LocalizationState.msg` 注释里出现的话题写法人肉同步，快照随之更新（提交 `b037dbd`）；
+- 装配仓承担注入责任：本仓 `launch/localization.launch.py` 无 `namespace` 参数，
+  提交 `b037dbd` 的标题「由 launch 注入」指的是装配层的 launch，不是本仓这一份；
+- CI 脚本里写死包名/路径的地方（`check_params.py`、`test_ros_results.py`、`test_guards.py`、
+  workflow 的路径过滤）随迁移一起改，否则门禁会对着不存在的包报「通过」。
+
+状态：已实现（2026-11-12，PR #11：`2486e37` 命名迁移 / `b037dbd` 相对话题名 /
+`f48cbaa` 按 CI 的 clang-format 18 与 black 重新格式化；`plan.md` M12）。

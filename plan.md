@@ -33,12 +33,15 @@
   - [x] **P1 B3** README 参数表按实现回写（原 `check_param_consistency.py` 随工具包删除，D16；
     该约束已由 CI `param-contract` 作业以零依赖方式恢复，D18），
     `tree.md` 修正节点 main 文件名（`decision.md` D15）
-  - [ ] **P2 C1/C2/C3** converged 判据、首帧/重定位对应距离、launch 级集成测试 —— 未开工
+  - [ ] **P2 C1/C2/C3** converged 判据、首帧/重定位对应距离、launch 级集成测试
+    （2026-11-16 复核：C1 已由 M10 的 L11 收敛判据拆米/弧度落地（`decision.md` D45）；
+    C2 的量测时刻与首帧口径由 L9（D40）、L6（D42）覆盖；**「launch 级集成测试」仍缺**，
+    本条按这一项挂账）
 - [x] **M8 文档与接口漂移门禁**：仓级 `scripts/ci/` 四个零依赖脚本（`check_style` /
   `check_contracts` / `check_params` / `check_tree_doc`）、`contracts.sha256` 接口快照、
   CI 四个作业（`file-hygiene` / `doc-sync` / `param-contract` / `contract-lock`），
   `tree.md` 双向一致（见 `decision.md` D18）
-- [ ] **M9 小 FOV 可观测性定位 · EKF 融合 · 性能**（`decision.md` D23/D24/D25）——进行中
+- [ ] **M9 小 FOV 可观测性定位 · EKF 融合 · 性能**（`decision.md` D23/D24/D25）——余 i8 未交付
   - [x] **i1 需求入档**：README「定位方案」补齐「位姿滤波」「可观测性与裁切」两节；
     `decision.md` 新增 D23（可观测性与方向约束）、D24（融合层 EKF）、D25（性能与可选后端）
   - [x] **i2 可观测性基础设施**：点面残差 6×6 信息矩阵、特征分解、不可观方向标签化、
@@ -48,8 +51,16 @@
   - [x] **i4 FOV 极限扫描实验**：静止条件下扫 360/180/120/90/60/45/30 度共九组，
     全部 `100% OK`、误差 0.04–0.12 m（A2 判据 0.30 m）；方向约束只在 60° 及以下有收益
     （0.118 → 0.066），120° 反而劣化。结论见 `decision.md` D26
-  - [ ] **i5 EKF 融合层**：常值预测、按可观性逐方向放大量测噪声、重定位硬切与重置、
+  - [x] **i5 EKF 融合层**：常值预测、按可观性逐方向放大量测噪声、重定位硬切与重置、
     `filter_enabled: false` 时与改造前逐字节等价的直通路径
+    （实装于 PR #8 `feat/fov-observability-ekf`，2026-11-16 复核补齐勾选）：
+    `pose_ekf.hpp` + `pose_ekf.cpp` 落地误差状态 6 维 EKF，节点接线为
+    `localization_node.cpp:89`（`filter_enabled` 声明）、`:94`（构造）、
+    `:444`（里程计回调每帧 `predict`，协方差随外推时间长大）、
+    `:693-697`（配准后 `update`，`enabled()==false` 时位姿直通）、
+    `:904`（`Relocalize` 硬切走 `reset`）；不可观方向权重 1 % 硬上限见
+    `decision.md` D46，量测噪声默认值取 D22 实测；`test_pose_ekf` 11 条用例覆盖直通、
+    权重上限、协方差收敛、非有限值入口（D47）。
   - [x] **i6 性能零依赖优化**：逆矩阵缓存、`PointCloudIndex` 与 target 法向复用、
     `setInputTarget` 跨帧复用可行性验证；逐项独立提交并给分段耗时表
   - [x] **i7 可选 small_gicp 后端评估**：`DIESEL_WITH_SMALL_GICP`（默认 OFF），
@@ -59,14 +70,15 @@
 - [x] **M10 审计整改 L1–L18**（`audit/tasks/02-diesel_localization.md`，原则见 `decision.md` D28）
   2026-11-03 全部 20 条落地：22 个提交在 `fix/audit-localization-02`（PR #7，base 为审计基线
   `feat/fov-observability-ekf`），每条都留了「父提交红 / 修复后绿」回执；容器内
-  `DIESEL_WITH_PCL=ON` 145 tests、`OFF` 138 tests 均 0 failures，四道门禁全绿。
+  `DIESEL_WITH_PCL=ON` 145 tests、`OFF` 138 tests 均 0 failures，四道门禁全绿
+  （当时的容器口径；宿主实测口径后来变为 ON 143 / OFF 136，见「当前 Agent State」）。
   - [x] **测试基建**：节点实现进库、可注入配准后端、`Diagnostics` 计数
     （`decision.md` D29）
   - [x] **P0 L1 执行器与回调组**：`MultiThreadedExecutor` + 独立回调组、聚类索引随地图建一次、
     odom 超时拆成「没收到」与「处理不及」两种 reason（`decision.md` D30/D35；
     回执：注入 200 ms 后端 6 s，父提交停在 `no valid registration`、积压 201.4 ms、
     状态 27.5 Hz；现为 `LOST=0`、积压 11.8 ms、状态 50.0 Hz）
-  - [ ] **P1 L2/L3/L4/L5/L9/L10**：地图失败转 LOST 且 TF 只放行 `OK`/`DEGRADED`、
+  - [x] **P1 L2/L3/L4/L5/L9/L10**：地图失败转 LOST 且 TF 只放行 `OK`/`DEGRADED`、
     `child_frame_id` 校验与 TF 补转换、位姿源仲裁接线（`select_pose_source`）、
     参数声明顺序、配准量测锁内快照、PCD 加载上限与异常安全
     - [x] **L2 地图不可用即 LOST、TF 闸门收紧**（`decision.md` D36）：三种地图失败
@@ -93,7 +105,7 @@
       `odom → child_frame_id` 解释，`child != base` 时用 TF 补 `T(base←child)` 并取逆乘进去。
       `test_localization_node` 两条用例：0.11 m 外参 → state x=0.890（父提交 1.000）；
       查不到 TF → 收到 78 帧、处理 0 帧、`tf_published=0`（父提交全部照收并发 TF）。
-  - [ ] **P2 L6/L7/L8/L11/L12/L13/L14/L15/L16 + 附带(a)(b)**：点云消费与 TF 时间戳、
+  - [x] **P2 L6/L7/L8/L11/L12/L13/L14/L15/L16 + 附带(a)(b)**：点云消费与 TF 时间戳、
     协方差真实填充、odom QoS 对齐 `sensor_data`、ICP 弧度阈值、EKF 增益饱和与
     Joseph 形式、GICP 缓存指纹、可观性掩码统一到 `map → odom`、新鲜度判定统一时钟域、
     删除死声明
@@ -149,7 +161,7 @@
       点云戳偏差 `0 ms`。
     - [x] **附带 (b) 删掉死声明 `update_health()`**（`decision.md` D52）：全仓 1 处声明、0 处定义、
       0 处调用；删除后构建与 142 条测试不变（死声明没有可执行的「改前坏」证据，回执即调用图）。
-  - [ ] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
+  - [x] **P3 L17/L18**：未匹配残差系数与 ascii 丢点计数（魔法数字注释 + 可观测）
     - [x] **L17 未匹配点的残差占位变成具名常量**（`decision.md` D53）：提
       `kUnmatchedResidualMultiple = 4.0` 到公开头文件并写明「为什么是 4、为什么不能是 0/inf」。
       回执：父提交该表达式是裸字面量（`4.0 * config_.residual_threshold_m`，无来源注释）、
@@ -168,8 +180,10 @@
     `DIESEL_WITH_PCL=ON` 时要求）。回执：`python3 -m pytest scripts/ci/test_ros_results.py -q -s`
     在 PCL ON 构建上 `结果文件: 18 个，用例 123 个，failures=0 errors=0` + `3 passed`；在
     `DIESEL_RESULTS_ROOT=/ws/build-nopcl` 上 `17 个 / 117 个` + `2 passed, 1 skipped`（`decision.md` D55）。
+    （2026-11-16 宿主复测：ON 构建 `18 个 / 125 个` + `3 passed`，用例数随 M11 之后新增的
+    节点级用例增长；OFF 构建口径不变。）
 
-- [ ] **M11 联调缺陷整改 L1–L8**（2026-11-11 仿真联调复盘；设计与取舍见 `decision.md` D56–D59）
+- [x] **M11 联调缺陷整改 L1–L8**（2026-11-11 仿真联调复盘；设计与取舍见 `decision.md` D56–D60）
   结论先说：A2 失败与 `ready=FAIL` 的根因都**不在配准算法**，在**帧契约与状态机表达**——
   仿真链里没有 `body` 帧，定位节点一帧点云都吃不到；节点又把「吃不到帧」表达成永不结束的
   `INITIALIZING`。补上帧之后 A2 仍掉锁，那是另一条独立成因（点数漏斗塌缩，见 i6）。
@@ -180,6 +194,8 @@
   #10（实现 → `dev`，堆叠在 #9 之上以便工作流触发，先合 #9 则 #10 只剩代码差异）；
   仿真仓 #6（→ `dev`）。三份 PR 的 CI 全绿（本仓 10 项：含 build-ros2 / build-nopcl 的
   `colcon test`；仿真仓 8 项），`MERGEABLE`，等评审。
+  **收口（2026-11-12）**：本仓 #9、#10 与仿真仓 #6 全部 **MERGED**；`dev` @ `1d0e20c` 的
+  最近一次 push CI（run 43240311471）成功。
   回执五（终验，ROS_DOMAIN_ID=66，判据修正后的最终代码）：`ready=PASS ready_delay_s=0.93
   lidar_s=0.13 localization_s=0.93 bt_navigator=active controller_server=active
   last_state=OK state_reason="warmup complete"`；`a2 samples=8336 max_xy_err=0.039
@@ -274,10 +290,49 @@
     既有用例，不是本轮改动引入，容器 CI 口径不受影响。`test_ros_results.py` 已登记 i3 的三例。
     四道门禁：`check_style` / `check_tree_doc`（104 文件、24 目录）/ `check_params`
     （2 节点、43 参数、3 份配置）/ `check_contracts`（5 个接口文件）全 exit 0。
+    **口径收口（2026-11-16 宿主复测，`dev` @ `1d0e20c` 全量重跑）**：`colcon build` 5 包
+    2 min 2 s exit 0；`colcon test` **ON 143 条目 / OFF 136 条目，两轮均 0 failures 0 errors**，
+    gtest 侧 18 个文件 125 例（core 39 / map 47 / ros 36 / relocalization 3）；上文 11-11 那次
+    「OFF 119」与本次差 17 条，差在包选择与 `test_localization_node` 系列是否纳入，**以本条
+    143 / 136 为准**；两条实时性断言在负载回落后全绿，不再是常态失败项。四道门禁同口径复测
+    全 exit 0；门禁自检 `test_guards.py` 在仓副本上 11/11 PASS。
+
+- [x] **M12 命名迁移到 Diesel · 自身话题改相对名**（2026-11-12，PR #11 `feat/diesel-naming`；
+  取舍见 `decision.md` D61）
+  组织级命名决策把上位机系统定名 Diesel（`foray_docs/diesel_naming_migration.md`，
+  discussion #6 投票 2:0），本仓随之改名；同一 PR 里把对外接口从绝对名改成相对名，
+  为装配层的 `/diesel/<robot>` 多机命名空间让位。
+  - [x] **i1 仓内命名迁移**（`2486e37`）：包 `foray_localization_*` →
+    `diesel_localization_{core,map,ros,relocalization,bringup}`、C++ 命名空间
+    `foray::` → `diesel::`、头文件 `include/foray/...` → `include/diesel/...`、
+    `.foray-layer` → `.diesel-layer`（层级内容不变，仍 L3 / 依赖 X2·L1·L2）；
+    消息号与字段不动，`contracts.sha256` 随包路径同步更新。
+  - [x] **i2 自身话题改相对名**（`b037dbd`）：`localization/{state,map_meta,dynamic_obstacles}`
+    与 `localization/relocalize` 去掉前导斜杠，全名交给节点 namespace；根命名空间下仍解析成
+    `/localization/*`，行为对既有用法零变化。上游 3 个话题仍是绝对名参数，TF 帧名不进
+    namespace。`LocalizationState.msg` 注释里的话题写法同步，快照随之更新（`contract-lock` 绿）。
+  - [x] **i3 CI 与门禁脚本跟改**（`2486e37`）：workflow 的路径过滤、`check_params.py`、
+    `test_ros_results.py`、`test_guards.py` 里写死的 `foray_localization_*` 全部改为
+    `diesel_localization_*`，否则门禁会对着不存在的包报「通过」。
+  - [x] **i4 格式化回归**（`f48cbaa`）：按 CI 的 clang-format 18 与 black 重排，
+    `lint-c` / `lint-python` 复绿；`dev` 上 CI run 43240311471 全绿。
+  - [x] **i5 文档同步**（2026-11-16 本轮补齐）：`README.md` 包表/话题表/namespace 归属按实际
+    重写，`tree.md` 的包名与目录说明更新，`decision.md` 补 D61，本条里程碑入 `plan.md`
+    ——此前 PR #11 只改了代码与既有文档里的包名，**没有留下决策条目与里程碑记录**。
+  - [ ] **i6 装配层注入落实**（跨仓：`diesel_robots`）：本仓 launch 不带 `namespace` 参数，
+    `/diesel/<robot>` 必须由装配仓用 `PushRosNamespace` 注入；装配侧尚未验证。
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
+  （`diesel_localization_relocalization` 目前是**骨架**：`PlaceLocalizer::estimate()`
+  恒返回「ONNX 推理管线尚未实现」，节点对 `MODE_PLACE` 写死拒绝，也没有任何节点引用该库；
+  开这个口子时先把推理后端与 `MODE_PLACE` 分支一起做）
 
 ## 当前 Agent State
+
+**NOW（2026-11-16）**：`dev` @ `1d0e20c`（PR #1–#11 全合并，push CI 绿）。M0–M4、M7–M12 完成；
+M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与 M6（2027 场地地图与标定）卡在实车/场地条件；
+P2（ONNX 全局重定位）只有骨架。**下一个该动的**是「已知缺口」里外部位姿那条 TF 打戳，
+以及 M5c 的阈值复算——其余都在等外部条件。
 
 DELIVERED：5 个 package 全部位于 `src/`（仓根即 colcon 空间根），重定位包已更名为
 `diesel_localization_relocalization`。2026-10-27 按「只保留核心定位算法」移除合成仿真与
@@ -292,17 +347,19 @@ D21）：默认的 `build-ros2` 走 `DIESEL_WITH_PCL=ON` 守护 GICP 主路径�
 M5b 的承接方 `diesel_simulation` 已建成并取证（首次 `OK` 3.78 s、位姿误差 0.083 m、
 `yaw` 0.012°，95 s 采样 4737 条状态中 4423 条 `OK`、零 `DEGRADED`/`LOST`）；M5c（实车 bag）
 仍待实车条件。
-验证环境：宿主无 ROS 2 / colcon / PCL，`colcon build` 与 `colcon test` 一律在容器里跑——
-镜像 `diesel_sim:humble-fortress`（Humble + Gazebo Fortress，含 PCL 1.12、gtest、colcon），
-本仓与仿真仓一起挂到 `/ws/src/`。2026-10-30 实测：装 PCL GICP 前 5 个包构建 51 s、
-73 tests / 0 errors / 0 failures；装之后同一口径（本仓 5 个包，`colcon test-result` 汇总）
-默认 ON 报 **75 tests**、`-DDIESEL_WITH_PCL=OFF` 报 **70 tests**，两轮均 0 failures——
-差的那 5 条就是 `test_pcl_gicp`（4 个用例 + 该文件在 CTest 里的汇总条目），map 包单独口径
-是 ON 34 / OFF 29。CI 的 `build-ros2` 保留，防的是「只在容器里验过」。
-2026-11-03 完成审计整改 M10：节点级测试基建落地后，`colcon test` 口径从 73 条涨到
-**145 条**（`DIESEL_WITH_PCL=OFF` 138 条），20 条发现的验收用例全部按名字被
+验证环境（2026-11-16 现状）：宿主已直接部署 ROS 2 Humble + PCL 1.12 + colcon，`colcon build` /
+`colcon test` 在宿主直跑即可（构建产物放仓外目录，别进 `build/`）；CI 仍在 `ros:humble`
+镜像里跑同一条链路，`build-ros2` 保的是「别只在本地验过」。历史口径（容器 `diesel_sim:humble-fortress`、
+装 PCL GICP 前 73 tests / 装后 ON 75 / OFF 70）只作沿革，**不再代表当前数字**。
+2026-11-03 完成审计整改 M10：节点级测试基建落地，20 条发现的验收用例全部按名字被
 `scripts/ci/test_ros_results.py` 断言存在（`decision.md` D55）；健康契约、协方差契约、
 执行器要求与地图硬上限都已写进 `README.md`，取舍记在 `decision.md` D30–D55。
+2026-11-12 M11 联调整改（D56–D60）与 M12 命名迁移（D61）合入 `dev`。
+**测试口径（2026-11-16 全量复测，`dev` @ `1d0e20c`）**：`DIESEL_WITH_PCL=ON` **143 条目**、
+`OFF` **136 条目**，两轮 0 failures 0 errors；gtest 18 个文件 **125 例**
+（core 39 / map 47 / ros 36 / relocalization 3）；`test_ros_results.py` 在 ON 构建上
+`18 个 / 125 个` + `3 passed`。此前文档里出现过的 145 / 138 / 119 / 142 均为不同时期的
+局部口径，一律以本条为准。
 
 ## 模糊点与待确认项
 
@@ -314,16 +371,42 @@ M5b 的承接方 `diesel_simulation` 已建成并取证（首次 `OK` 3.78 s、�
   见 `foray_docs/algorithm_structure.md` §12）；保留为预留配置，不参与验收
 - 2027 场地地图需赛前场地窗口实测；当前以录制包回放验证（无实车，M5 未完成）
 - 自动全局重定位（ONNX）为 P2，默认关闭；许可证决策不在本期范围
+- **已知缺口（2026-11-16 审计确认，未修复）**：纯外部位姿 / 外部位姿接管期间
+  `map → odom` 的 TF 打戳不可用——`publish_tf()`（`localization_node.cpp:812`）用只在
+  `on_align_timer()`（`:593`）赋值的 `last_align_stamp_ns_` 打戳，而 `kExternal` 策略下该
+  定时器首行即返回（`:563-565`），戳恒为 0；`:806` 的 `!has_odom_` 闸门又让「只有外部位姿」
+  的部署一帧 TF 都不发，同时 `state` 报 `OK` / `pose_valid=true`。现有三条外部位姿用例
+  （`test_localization_node.cpp:392/412/432`）无 TF 断言。**链路以雷达为主时不受影响**，
+  补齐外部位姿部署前必须修
+- **已知缺口（同上）**：`max_odom_lag_sec_`（`localization_node.cpp:452-453`）只增不减，
+  一次处理积压会让此后所有 odom 断流的 `reason` 永久标成 `processing backlog`
+- 许可证口径不统一：`core` / `map` / `ros` 三个 `package.xml` 的 `<license>` 是 `TODO`，
+  `bringup` / `relocalization` 已写 `Proprietary`；等《专利与许可证决策》结论后一次性拉平
+  （同「P2 许可证」项）
 
 ## Acceptance Criteria
 
-- [ ] 本仓能独立 `colcon build`（无代码时跳过）
-- [ ] CI 绿灯
-- [ ] 每个新增模块带独立可执行测试
+- [x] 本仓能独立 `colcon build`（无代码时跳过）
+  ——2026-11-16 宿主实测 5 包全过，2 min 2 s exit 0（PCL ON / OFF 各一轮）
+- [x] CI 绿灯
+  ——`dev` @ `1d0e20c` 最近一次 push：run 43240311471 success（10 个作业全绿）
+- [x] 每个新增模块带独立可执行测试
+  ——`core` / `map` / `ros` / `relocalization` 各有 gtest 目标，18 个测试文件 125 例；
+  合并后仍 0 failures（`test_ros_results.py` 按名字断言审计用例存在）
 - [ ] 录包回放 ATE ≤ 5 cm、航向 ≤ 2°（相对起点；仿真回放能力已移出本仓，D16）
-- [ ] 定位初始化 ≤ 5 s；`LocalizationState` ≥ 50 Hz；GICP 5 Hz 且 p99 ≤ 40 ms
-  （p99 缺实车/实图数据，暂以容器基准为参考；GICP 后端已于 2026-10-30 实装，见 `decision.md` D21）
+  ——待 M5c 实车 bag；仿真侧 A2 口径为 0.30 m / 5°，不是这一条
+- [x] 定位初始化 ≤ 5 s；`LocalizationState` ≥ 50 Hz
+  ——M11 回执五：`ready_delay_s=0.93`、`localization_s=0.93`、状态 50.0 Hz
+- [ ] GICP 5 Hz 且 p99 ≤ 40 ms
+  ——5 Hz 由 `align_rate_hz` 上限与回执覆盖，p99 缺实车/实图数据，暂以宿主基准为参考
 - [ ] 配准失效 ≤ 200 ms 输出 `DEGRADED`、≤ 1 s 输出 `LOST`，无静默外推
+  ——判据与状态机有单测（`lost_timeout_sec` / `warmup_frames` / 外推路径），
+  但「≤ 200 ms 公告」的时序本身没有专门用例，需在集成测试里补
 - [ ] 同源地图 2D/3D 一致率 ≥ 95%，manifest 强校验
+  ——manifest 强校验部分已实现并有单测（D41、`test_manifest` / `test_prior_map`）；
+  2D/3D 一致率需要用真实建图产物统计，M5c 一并做
 - [ ] 动态物体检出率 ≥ 90%（标注集）
+  ——无标注集，本仓只做「残差聚类 + 持续时间」的几何检出，检出率需在 M5c 现场统计
 - [ ] 兵种 launch 可分别启动（3v3：步兵/哨兵），参数错误有明确报错
+  ——三份 `bringup/config/*.yaml` 与 `localization.launch.py` 的 `config_name` 已就位、
+  `param-contract` 看守三处一致，但**没有 launch 级集成测试**（同 M7b P2 C3），未实证
