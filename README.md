@@ -107,7 +107,7 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `diesel_localization_core` | 位姿/健康状态机/位姿源仲裁/地图 manifest/几何，纯函数 | 否 |
 | `diesel_localization_map` | PCD 先验地图、2D 栅格、PCL GICP 后端（内置 ICP 兜底）、残差聚类 | 否 |
 | `diesel_localization_ros` | 节点、TF、QoS、消息/服务、map_server、适配器 | 是 |
-| `diesel_localization_relocalization` | 可选 ONNX Runtime（CPU）全局重定位（原 `_place`，已更名），默认 OFF | 可选 |
+| `diesel_localization_relocalization` | 全局重定位**骨架**（原 `_place`）：几何/接口已就位，ONNX 推理未实现，未被任何节点引用，属 P2 预留 | 可选 |
 | `diesel_localization_bringup` | 三兵种 launch / params（`heavy.yaml` 为装甲兵种预留，2027 3v3 不使用） | 是 |
 
 ## 接口
@@ -118,7 +118,10 @@ CI 的 `dir-layout` 作业按同一规则校验。
 |---|---|---|---|
 | 输入 | `/aft_mapped_to_init` | `nav_msgs/Odometry` | sensor_data / 100–200 Hz |
 | 输入 | `/livox/lidar` | `sensor_msgs/PointCloud2` | sensor_data / 10 Hz |
-| 输入 | `/localization/external_pose` | `geometry_msgs/PoseWithCovarianceStamped` | 步兵/重装外部位姿，50 Hz |
+| 输入 | `/localization/external_pose` | `geometry_msgs/PoseWithCovarianceStamped` | reliable（depth 20）/ 频率由上游决定 |
+| 输出 | `localization/state` | `diesel_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
+| 输出 | `localization/map_meta` | `diesel_localization_ros/MapMeta` | transient_local / 1 Hz |
+| 输出 | `localization/dynamic_obstacles` | `diesel_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
 
 `/aft_mapped_to_init` 的 `pose` 是 `odom → child_frame_id`：`child_frame_id` 等于
 `base_frame` 时直接使用，否则按 TF 把安装外参换算进来（`decision.md` D37）；查不到 TF
@@ -127,14 +130,15 @@ CI 的 `dir-layout` 作业按同一规则校验。
 `/localization/external_pose` 是 `map → base_frame` 的量测，与配准结果同类：`pose_source`
 为 `external` 时无条件采用；为 `auto` 时**只在雷达位姿断流超过 `lidar_timeout_sec` 期间**采用，
 雷达恢复后位姿源自动翻回雷达（`decision.md` D38）。外部位姿没有可测的配准质量，
-所以它不参与残差/内点率判据，健康状态只判它是否新鲜。
-| 输出 | `localization/state` | `diesel_localization_ros/LocalizationState` | reliable, transient_local / 50 Hz |
-| 输出 | `localization/map_meta` | `diesel_localization_ros/MapMeta` | transient_local / 1 Hz |
-| 输出 | `localization/dynamic_obstacles` | `diesel_localization_ros/DynamicObstacleArray` | reliable / 10 Hz |
+所以它不参与残差/内点率判据，健康状态只判它是否新鲜。注意它由本体/外部位姿模块提供，
+不是本仓发布的；纯外部位姿部署（无点云）目前只保证 `state`/`pose` 可用，`map → odom`
+的 TF 打戳有已知缺口，见文末「已知缺口」。
 
 本仓自己发布的 3 个话题与 1 个服务都是**相对名**，由节点 namespace 决定全名：根命名空间下即
 `/localization/state`，实机按 `/diesel/<robot>` 注入后为 `/diesel/sentry/localization/state`
-（`foray_docs/diesel_naming_migration.md` §1.5）。上游话题（`cloud_topic` / `odom_topic` /
+（`foray_docs/diesel_naming_migration.md` §1.5）。**namespace 由装配仓（`diesel_robots`）在
+include 本仓 launch 时用 `PushRosNamespace` 注入**，本仓的 `localization.launch.py` 不带
+`namespace` 参数、自身处于根命名空间（`decision.md` D61）。上游话题（`cloud_topic` / `odom_topic` /
 `external_pose_topic`）仍是绝对名参数，由 launch 覆盖；TF 帧名（`map` / `odom` /
 `base_footprint` / `body`）不进 namespace。
 
@@ -182,7 +186,7 @@ CI 的 `dir-layout` 作业按同一规则校验。
 | `residual_threshold_m` | `0.30` | 配准残差超过该距离的点判为残差（m） |
 | `cluster_tolerance_m` | `0.30` | 残差点欧氏聚类容差（m） |
 | `verify_map_hashes` | `true` | 加载地图时校验 SHA-256；由 launch 的 `verify_map_hashes:=` 覆盖 |
-| `pose_source` | `auto` | `auto` / `lidar` / `external`；步兵/重装用 `external` |
+| `pose_source` | `auto` | `auto` / `lidar` / `external`。三份兵种配置都取 `auto`：有雷达就用雷达，雷达断流期间自动翻外部位姿；`lidar` 禁用外部回退，`external` 恒用外部位姿（本仓未随附该配置） |
 | `ok_mean_residual_m` | `0.15` | 进入 `OK` 的平均残差上限（m）。不能低于先验地图自身离散度：0.25 m 体素图即便配准完全收敛，实测残差也有约 0.10 m（见 `decision.md` D22） |
 | `degraded_mean_residual_m` | `0.30` | `DEGRADED` 可接受的平均残差上限（m） |
 | `ok_inlier_ratio` | `0.55` | 进入 `OK` 的内点率下限 |
@@ -332,6 +336,21 @@ ascii 段里字段数不足的行、以及 x/y/z 为 NaN/inf 的点会被跳过�
 |---|---|
 | **上游**（本仓依赖谁） | `diesel_interfaces` · `diesel_platform` |
 | **下游**（谁依赖本仓） | `diesel_vision` · `diesel_navigation` · `diesel_decision` · `diesel_robots` · `diesel_ws` |
+
+## 已知缺口
+
+**本仓已知的三条行为缺口**（细节与待修清单见 [`plan.md`](plan.md) 的「模糊点与待确认项」，
+这里只写下游需要知道的契约边界）：
+
+1. **纯外部位姿部署下 `map → odom` 不可用。** `pose_source: external` 时本仓不发有意义的
+   TF（戳为 0），且「只有外部位姿、没有里程计」的配置一帧 TF 都不发——此时只能消费
+   `localization/state` 的 `pose`/`pose_valid`，**不要查 TF**。`auto` 模式下雷达断流被
+   外部位姿接管期间，TF 戳会停在最后一次配准时刻并重复发布，下游按 `now()` 查会
+   extrapolation 失败，需把 `pose_valid`/`age_sec` 作为唯一判据。
+2. **`LOST` 的 odom 断流 `reason` 可能失真**：进程曾出现过处理积压后，后续「真的没收到帧」
+   也会被标成 `processing backlog`。排查时以 `age_sec` 与上游是否真在发为准。
+3. **`diesel_localization_relocalization` 不可用**：全局重定位只有接口骨架，推理未实现，
+   也没有节点引用它；当前的重定位手段只有 `localization/relocalize` 服务注入初值。
 
 ## 参考
 
