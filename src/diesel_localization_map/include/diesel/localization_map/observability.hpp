@@ -132,6 +132,25 @@ Eigen::Matrix<double, kDofCount, 1>
 project_delta_to_observable(const Eigen::Matrix<double, kDofCount, 1>& delta,
                             const ObservabilityReport& report);
 
+/// 只把「配准相对初值的修正量」投影到可观子空间，返回修正后的位姿（decision.md D62）。
+///
+/// `guess` 是喂给配准的初值（已含两次配准之间的里程计外推），`registered` 是配准结果。
+/// 被投影的必须是 `registered * guess⁻¹`，**不是** `registered * previous⁻¹`：后者把
+/// 里程计在这一帧里走过的位移也当成「修正量」，于是沿不可观方向的外推被一并删掉，
+/// 位姿会冻结在原地——正是「不可观方向由里程计外推承担」这条契约的反面。
+///
+/// `lever_origin` 必须与 `analyze_observability()` 用的是同一个点。信息矩阵的旋转雅可比是
+/// `(p - lever_origin) × n`，对应的 6 维量是「绕 `lever_origin` 转」的 twist；而左乘增量的
+/// 平移分量是「绕世界原点转」的表述，两者相差 `ω × lever_origin`。不做这次换算，
+/// 旋转时会在不可观方向上凭空注入 |ω|·|lever| 米的位移。
+///
+/// 两个参数化换算：`τ = t + ω × lever`（进投影），`t = τ − ω × lever`（出投影）。
+/// `report` 全 6 方向可观时，返回值与 `registered` 完全一致（投影是恒等变换）。
+Eigen::Isometry3d project_registration_correction(const Eigen::Isometry3d& guess,
+                                                  const Eigen::Isometry3d& registered,
+                                                  const ObservabilityReport& report,
+                                                  const Eigen::Vector3d& lever_origin);
+
 } // namespace diesel::localization_map
 
 #endif // DIESEL_LOCALIZATION_MAP_OBSERVABILITY_HPP_

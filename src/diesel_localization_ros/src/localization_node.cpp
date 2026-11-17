@@ -671,22 +671,13 @@ void LocalizationNode::on_align_timer() {
     if (health_status_.state != diesel::localization::HealthState::kLost &&
         result.inlier_ratio > 0.0) {
         if (observability_enabled) {
-            // 左乘增量（map 系）：correction 只保留可观分量，不可观方向保持当前估计。
-            const Eigen::Isometry3d delta = result.transform * map_to_base_.inverse();
-            Eigen::Matrix<double, diesel::localization_map::kDofCount, 1> delta_vector;
-            delta_vector.head<3>() = delta.translation();
-            const Eigen::AngleAxisd delta_rotation(delta.linear());
-            delta_vector.tail<3>() = delta_rotation.angle() * delta_rotation.axis();
-            const auto projected =
-                diesel::localization_map::project_delta_to_observable(delta_vector, observability);
-            Eigen::Isometry3d correction = Eigen::Isometry3d::Identity();
-            correction.translation() = projected.head<3>();
-            const Eigen::Vector3d omega = projected.tail<3>();
-            const double angle = omega.norm();
-            if (angle > 1e-12) {
-                correction.linear() = Eigen::AngleAxisd(angle, omega / angle).toRotationMatrix();
-            }
-            map_to_base_ = correction * map_to_base_;
+            // 只投影「配准相对 guess 的修正量」，不可观方向保持 guess 里的里程计外推
+            // （decision.md D62）。父提交投影的是 `result.transform * map_to_base_⁻¹`，
+            // 而 map_to_base_ 是上一轮的值，两者之差含整段里程计传播 D = O_prev⁻¹·O_cur，
+            // 于是沿不可观方向的外推被一并删掉、位姿冻结在原地（复核 P0-0，二进制 A/B
+            // 实测 5.75 m 直行只前进 0.55 m）。力臂口径同时由该函数统一（复核 P0-1）。
+            map_to_base_ = diesel::localization_map::project_registration_correction(
+                guess, result.transform, observability, map_to_odom_origin);
         } else {
             map_to_base_ = result.transform;
         }
