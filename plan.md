@@ -322,6 +322,41 @@
   - [ ] **i6 装配层注入落实**（跨仓：`diesel_robots`）：本仓 launch 不带 `namespace` 参数，
     `/diesel/<robot>` 必须由装配仓用 `PushRosNamespace` 注入；装配侧尚未验证。
 
+- [ ] **M13 可观性投影的范围与力臂修正**（2026-11-17，分支 `fix/projection-scope-1117`；
+  取舍见 `decision.md` D62）
+  定位流程复核（报告 `diesel_localization_flow_review_20261117.md`）发现投影有两处与
+  `README.md:81-84` 的承诺相反：投影对象含整段里程计传播（P0-0，主因）、平移分量与旋转
+  雅可比的力臂口径不一致（P0-1，次因）。实链取证：同一条 5.75 m 直行，投影开着只前进
+  0.55 m（advance 0.10），关掉走满——**里程计是好的，是投影把它的输出吃掉了**。
+  - [x] **i1 纯函数承载投影数学**：`diesel_localization_map` 新增
+    `project_registration_correction(guess, registered, report, lever_origin)`，
+    投影 `registered * guess⁻¹` 后左乘回 `guess`，并在同一处做力臂换算
+    `τ = t + ω × lever` / `t = τ − ω × lever`。`project_delta_to_observable()` 与
+    `analyze_observability()` 语义不变。
+  - [x] **i2 节点侧收敛成一次调用**：`localization_node.cpp` 的 `observability_enabled`
+    分支从 19 行内联数学换成一次调用，`lever` 与 `:634` 传给 `analyze_observability()`
+    的 `map_to_odom_origin` 强制同源。话题/服务/参数/消息零变更。
+  - [x] **i3 补两类此前测不到的单测**：范围类（走廊 10 帧×0.25 m、配准完美）实测
+    「真实前进 2.500 m；新实现 2.5000 m；父提交 0.0081 m」；力臂类（|lever|=1.80 m、
+    绕 lever 转 0.1 rad）实测「不可观残留 新 0.000000 / 父提交 0.120604；离配准结果
+    新 0.028 m / 父提交 0.189 m」。两条判据都**自带父提交实现作反例**，自证能拦下旧代码。
+    另加「全 6 方向可观时投影是恒等变换」。原有 6 处投影调用全传纯平移（ω=0），
+    正是力臂缺项能活这么久的原因。
+  - [x] **i4 门禁与全量测试**：四道门禁（`check_style` / `check_tree_doc` /
+    `check_contracts` / `check_params`）全 PASS，`test_guards.py` 11 passed，
+    clang-format 18.1.8 `--dry-run -Werror` 干净；`colcon test` **PCL ON 146 条目 /
+    OFF 139 条目**（此前 143 / 136，+3 即新增用例），两轮 0 failures 0 errors。
+  - [x] **i5 仿真实链验证（真·二进制 A/B，各两轮）**：`diesel_simulation` / `rmul_2027`，
+    父提交 `ef4715b` 与修复各建一份 Release install，(1,2) 起 +x 直行 5.75 m @0.5 m/s，
+    **两臂阈值都仍是 0.05（投影开着）**，`LIO_DELAY=25 / POSE_DELAY=28` 相同。
+    advance：父提交 **0.0958 / 0.1096** → 修复 **0.9855 / 0.9836**；
+    move 段最大误差：**5.21 / 5.14 m** → **0.29 / 0.25 m**；
+    move 段最大偏航：**25.2° / 31.4°** → **2.7° / 5.5°**。
+    四轮 point_lio 里程计 advance 均 0.997、误差 0.025~0.033 m，真值路程 5.752~5.759 m
+    ——唯一变量就是定位二进制。残留 0.2~0.3 m 与静止段首次放置偏差（0.04~0.22 m，
+    复核 P1-4）同量级，不是投影造成的。
+  - [ ] **i6 提交 + PR + CI**：分支已就绪，待推送并开 PR 到 `dev`。
+
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
   （`diesel_localization_relocalization` 目前是**骨架**：`PlaceLocalizer::estimate()`
   恒返回「ONNX 推理管线尚未实现」，节点对 `MODE_PLACE` 写死拒绝，也没有任何节点引用该库；
@@ -329,10 +364,13 @@
 
 ## 当前 Agent State
 
-**NOW（2026-11-16）**：`dev` @ `1d0e20c`（PR #1–#11 全合并，push CI 绿）。M0–M4、M7–M12 完成；
-M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与 M6（2027 场地地图与标定）卡在实车/场地条件；
-P2（ONNX 全局重定位）只有骨架。**下一个该动的**是「已知缺口」里外部位姿那条 TF 打戳，
-以及 M5c 的阈值复算——其余都在等外部条件。
+**NOW（2026-11-17）**：`dev` @ `ef4715b`（PR #1–#12 全合并）。工作分支
+`fix/projection-scope-1117` 修掉可观性投影的两处错（M13 / `decision.md` D62）：投影对象
+含整段里程计传播（P0-0）、力臂口径不一致（P0-1）。代码 + 单测 + 门禁 + 实链验证已完成，
+**待推送开 PR**。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
+M6（2027 场地地图与标定）卡在实车/场地条件；P2（ONNX 全局重定位）只有骨架。
+**下一个该动的**是复核报告里的 P0-2（DEGRADED 不落 LOST，属健康契约变更，必须先定
+LOST 后的恢复策略），其次是「已知缺口」里外部位姿那条 TF 打戳。
 
 DELIVERED：5 个 package 全部位于 `src/`（仓根即 colcon 空间根），重定位包已更名为
 `diesel_localization_relocalization`。2026-10-27 按「只保留核心定位算法」移除合成仿真与
@@ -355,11 +393,12 @@ M5b 的承接方 `diesel_simulation` 已建成并取证（首次 `OK` 3.78 s、�
 `scripts/ci/test_ros_results.py` 断言存在（`decision.md` D55）；健康契约、协方差契约、
 执行器要求与地图硬上限都已写进 `README.md`，取舍记在 `decision.md` D30–D55。
 2026-11-12 M11 联调整改（D56–D60）与 M12 命名迁移（D61）合入 `dev`。
-**测试口径（2026-11-16 全量复测，`dev` @ `1d0e20c`）**：`DIESEL_WITH_PCL=ON` **143 条目**、
-`OFF` **136 条目**，两轮 0 failures 0 errors；gtest 18 个文件 **125 例**
-（core 39 / map 47 / ros 36 / relocalization 3）；`test_ros_results.py` 在 ON 构建上
-`18 个 / 125 个` + `3 passed`。此前文档里出现过的 145 / 138 / 119 / 142 均为不同时期的
-局部口径，一律以本条为准。
+**测试口径（2026-11-17 全量复测，分支 `fix/projection-scope-1117`）**：`DIESEL_WITH_PCL=ON`
+**146 条目**、`OFF` **139 条目**，两轮 0 failures 0 errors；gtest 18 个文件 **128 例**
+（core 39 / map 50 / ros 36 / relocalization 3）；`test_ros_results.py` 在 ON 构建上
+`18 个 / 128 个` + `3 passed`（构建产物在仓外时用 `DIESEL_RESULTS_ROOT` 指向 build 目录）。
+`dev` @ `ef4715b` 的口径是 ON 143 / OFF 136 / 125 例，差的 3 例就是 M13 i3 新增的投影用例。
+此前文档里出现过的 145 / 138 / 119 / 142 均为不同时期的局部口径，一律以本条为准。
 
 ## 模糊点与待确认项
 
