@@ -357,8 +357,12 @@
     复核 P1-4）同量级，不是投影造成的。
   - [x] **i6 提交 + 推送**：三个逻辑提交（`33af4d5` 代码 / `ab2f4ca` 单测 /
     `a34381d` 文档）已推到 `origin/fix/projection-scope-1117`。
-  - [ ] **i7 PR + CI**：PR 未开（本仓 CI 只对目标分支 `main`/`dev` 的 push 与
-    `pull_request` 触发，光推分支不跑 CI），待主人授权。
+  - [x] **i7 PR + CI**：**PR #13**（base `dev`，2026-11-17 开）CI **10/10 全绿**
+    （run 44060220912：build-ros2 5m4s / build-nopcl 4m55s / contract-lock / dir-layout /
+    doc-sync / file-hygiene / gate-selftest / lint-c / lint-python / param-contract）。
+  - [ ] **i8 合并**：`mergeable=MERGEABLE` 但 `mergeStateStatus=BLOCKED`——`dev` 的分支保护
+    要求 1 个 approving review，而 GitHub 不允许作者批准自己的 PR。**卡在人工评审**，
+    不是技术问题；主人有空再审。合并后 M14 的分支需 rebase 到新 `dev`。
 
 - [ ] **M14 被测配置对齐生产（方法论 B1+B2）**（2026-11-17，分支 `feat/test-config-gate-1117`；
   取舍见 `decision.md` D63；堆叠在 `fix/projection-scope-1117` 之上，因为新用例需要 D62 的修复）
@@ -388,7 +392,11 @@
     （此前 128）、failures=0 errors=0。
   - [x] **i6 文档同步**：`README.md` 补 `test-config` 契约与来历、「四道门禁」改五道；
     `decision.md` D63；`tree.md` 增脚本行、CI 作业数改 11。
-  - [ ] **i7 提交 + PR + CI**：待推送并开 PR 到 `dev`（base 需先合 `fix/projection-scope-1117`）。
+  - [x] **i7 提交 + 推送**：四个逻辑提交（`241831f` 用例 / `8ea7cbd` 门禁+CI /
+    `a1dab20` 自检注入 / `8b56929` 文档）已推到 `origin/feat/test-config-gate-1117`。
+    用例提交刻意排在门禁提交**之前**，否则中间那个提交会让新门禁红。
+  - [ ] **i8 PR + CI**：按主人定的**串行**流程，等 PR #13 合入 `dev` 后再 rebase 本分支
+    并开 PR（届时基线变了，需要 force-push）。PR 正文已备好，尚未提交。
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
   （`diesel_localization_relocalization` 目前是**骨架**：`PlaceLocalizer::estimate()`
@@ -401,8 +409,9 @@
 `fix/projection-scope-1117`（M13 / D62）修掉可观性投影的两处错——投影对象含整段里程计
 传播（P0-0）、力臂口径不一致（P0-1），代码 + 单测 + 门禁 + 实链二进制 A/B 已完成、**已推送**；
 `feat/test-config-gate-1117`（M14 / D63）堆叠在它之上，补第五道门禁 `test-config`
-（被测配置必须对齐生产，债务台账双向棘轮）与一条生产口径节点用例（自带父提交反例）。
-**两个 PR 都还没开**，等主人授权。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
+（被测配置必须对齐生产，债务台账双向棘轮）与一条生产口径节点用例（自带父提交反例），
+**已推送**。**PR #13 已开、CI 10/10 全绿，卡在 `dev` 要求的 1 个 approving review**
+（作者不能自批）；第二个分支按串行流程待命，等 #13 合并后 rebase 再开 PR。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
 M6（2027 场地地图与标定）卡在实车/场地条件；P2（ONNX 全局重定位）只有骨架。
 **下一个该动的**是复核报告里的 P0-2（DEGRADED 不落 LOST，属健康契约变更，必须先定
 LOST 后的恢复策略），其次是「已知缺口」里外部位姿那条 TF 打戳。
