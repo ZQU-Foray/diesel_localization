@@ -355,7 +355,40 @@
     四轮 point_lio 里程计 advance 均 0.997、误差 0.025~0.033 m，真值路程 5.752~5.759 m
     ——唯一变量就是定位二进制。残留 0.2~0.3 m 与静止段首次放置偏差（0.04~0.22 m，
     复核 P1-4）同量级，不是投影造成的。
-  - [ ] **i6 提交 + PR + CI**：分支已就绪，待推送并开 PR 到 `dev`。
+  - [x] **i6 提交 + 推送**：三个逻辑提交（`33af4d5` 代码 / `ab2f4ca` 单测 /
+    `a34381d` 文档）已推到 `origin/fix/projection-scope-1117`。
+  - [ ] **i7 PR + CI**：PR 未开（本仓 CI 只对目标分支 `main`/`dev` 的 push 与
+    `pull_request` 触发，光推分支不跑 CI），待主人授权。
+
+- [ ] **M14 被测配置对齐生产（方法论 B1+B2）**（2026-11-17，分支 `feat/test-config-gate-1117`；
+  取舍见 `decision.md` D63；堆叠在 `fix/projection-scope-1117` 之上，因为新用例需要 D62 的修复）
+  复盘 git 历史得到的共性问题：86 个非 merge 提交里 29 个 fix，19 个都在改
+  `localization_node.cpp`。D62 那两个米级缺陷的成因不是「没人测」，而是
+  **测的那一档不是生产那一档**——`observability_ratio_threshold` 代码默认 `0.0`（投影关闭），
+  只有 `sentry.yaml` 写 `0.05`，17 条节点用例全在投影关闭下跑。`param-contract` 只管三处
+  声明一致，从设计上不管这件事。
+  - [x] **i1 新增第五道门禁**：`scripts/ci/check_test_config.py` —— 兵种配置里写了非默认值的
+    参数必须有具名测试覆盖；覆盖不了的登记进 `DEBT_LEDGER`，写明为什么测不到与何时必须补。
+    台账是**双向棘轮**：新增未登记的债 → 红；已登记的债被覆盖或已失效 → 也红（只许缩）。
+  - [x] **i2 接进 CI 与自检**：新增 `test-config` 作业（CI 由 10 → 11 个）；
+    `test_guards.py` 加 1 基线 + 2 注入（`filter_enabled: false→true` 触发「新增债」；
+    往节点测试塞一个台账参数名触发「债已失效」），**11 → 14 条，实测 14 passed**。
+  - [x] **i3 补生产口径节点用例**：`ProductionObservabilityKeepsPoseAdvancing` 按 sentry 的
+    `0.05 / 3` 开投影，8 s @2 m/s 走 16 m。前置条件**独立于被测节点**再算一遍
+    `analyze_observability`，断言「沿运动方向的平移落在不可观子空间里」（实测可观占比 0.0000），
+    防止阈值被误改回 0.0 时「因为没有投影所以完美跟随」而假绿。
+  - [x] **i4 两臂反例都真跑过**（同一份测试文件，只换产品代码）：本分支 **15.9340 m** PASS；
+    父提交 `ef4715b` **13.9527 m** FAIL（判据 > 15.5）。两臂 `align_runs=38`、不可观 4/6、
+    点面约束 20 完全一致。速度取 2 m/s 是因为父提交按固定比例（约 13%）吃前进量，
+    1 m/s 只丢 1.0 m，配准帧数掉到 15 就会蒙混过关；2 m/s 丢 2.05 m，对 0.5 m 容差 4 倍余量。
+  - [x] **i5 门禁与全量测试**：五道门禁全 PASS，`test_guards.py` **14 passed**，
+    clang-format 18.1.8 `--dry-run -Werror` 干净；Release 全量构建 5 包后
+    `colcon test` **PCL ON 147 条目 / OFF 140 条目**（此前 146 / 139，+1 即新增用例），
+    两轮 0 failures 0 errors；`test_ros_results.py` 读到 **18 个结果文件 / 129 个用例**
+    （此前 128）、failures=0 errors=0。
+  - [x] **i6 文档同步**：`README.md` 补 `test-config` 契约与来历、「四道门禁」改五道；
+    `decision.md` D63；`tree.md` 增脚本行、CI 作业数改 11。
+  - [ ] **i7 提交 + PR + CI**：待推送并开 PR 到 `dev`（base 需先合 `fix/projection-scope-1117`）。
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
   （`diesel_localization_relocalization` 目前是**骨架**：`PlaceLocalizer::estimate()`
@@ -364,10 +397,12 @@
 
 ## 当前 Agent State
 
-**NOW（2026-11-17）**：`dev` @ `ef4715b`（PR #1–#12 全合并）。工作分支
-`fix/projection-scope-1117` 修掉可观性投影的两处错（M13 / `decision.md` D62）：投影对象
-含整段里程计传播（P0-0）、力臂口径不一致（P0-1）。代码 + 单测 + 门禁 + 实链验证已完成，
-**待推送开 PR**。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
+**NOW（2026-11-17）**：`dev` @ `ef4715b`（PR #1–#12 全合并）。两条工作分支：
+`fix/projection-scope-1117`（M13 / D62）修掉可观性投影的两处错——投影对象含整段里程计
+传播（P0-0）、力臂口径不一致（P0-1），代码 + 单测 + 门禁 + 实链二进制 A/B 已完成、**已推送**；
+`feat/test-config-gate-1117`（M14 / D63）堆叠在它之上，补第五道门禁 `test-config`
+（被测配置必须对齐生产，债务台账双向棘轮）与一条生产口径节点用例（自带父提交反例）。
+**两个 PR 都还没开**，等主人授权。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
 M6（2027 场地地图与标定）卡在实车/场地条件；P2（ONNX 全局重定位）只有骨架。
 **下一个该动的**是复核报告里的 P0-2（DEGRADED 不落 LOST，属健康契约变更，必须先定
 LOST 后的恢复策略），其次是「已知缺口」里外部位姿那条 TF 打戳。
@@ -375,13 +410,16 @@ LOST 后的恢复策略），其次是「已知缺口」里外部位姿那条 TF
 DELIVERED：5 个 package 全部位于 `src/`（仓根即 colcon 空间根），重定位包已更名为
 `diesel_localization_relocalization`。2026-10-27 按「只保留核心定位算法」移除合成仿真与
 离线工具（`decision.md` D16）：无 `sim-smoke`、无建图/评估脚本。车下验证改为录制包回放。
-2026-10-28 补上文档与接口门禁（`decision.md` D18），CI 共 10 个作业：`dir-layout` /
-`file-hygiene` / `doc-sync` / `param-contract` / `contract-lock` / `gate-selftest` /
-`lint-python` / `lint-c` / `build-ros2` / `build-nopcl`（作业清单以 `.github/workflows/ci.yml`
+2026-10-28 补上文档与接口门禁（`decision.md` D18），CI 共 11 个作业：`dir-layout` /
+`file-hygiene` / `doc-sync` / `param-contract` / `test-config` / `contract-lock` /
+`gate-selftest` / `lint-python` / `lint-c` / `build-ros2` / `build-nopcl`（作业清单以 `.github/workflows/ci.yml`
 的 `jobs` 为准，此处只是便于扫读的复述；此前写成「8 个」并漏列 `gate-selftest` 正是靠人眼
 同步数字的产物）。第十个作业 `build-nopcl` 是 2026-10-30 实装 PCL GICP 时加的（`decision.md`
 D21）：默认的 `build-ros2` 走 `DIESEL_WITH_PCL=ON` 守护 GICP 主路径，`build-nopcl` 走 `OFF`
 守护内置 ICP 回退路径——只验一条路径等于另一条迟早烂掉。
+第十一个作业 `test-config` 是 2026-11-17 加的（`decision.md` D63）：前面那些门禁管的是
+「声明有没有漂移」，它管的是「测试跑的是不是生产那一档」——D62 的两个米级缺陷正是
+从这个缝里漏过去的。
 M5b 的承接方 `diesel_simulation` 已建成并取证（首次 `OK` 3.78 s、位姿误差 0.083 m、
 `yaw` 0.012°，95 s 采样 4737 条状态中 4423 条 `OK`、零 `DEGRADED`/`LOST`）；M5c（实车 bag）
 仍待实车条件。
