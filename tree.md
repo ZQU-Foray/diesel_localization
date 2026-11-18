@@ -39,13 +39,14 @@
 ├── contracts.sha256               msg/srv/action 接口指纹快照，CI `contract-lock` 依此校验
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                 CI 作业定义（10 个：布局/门禁/lint/构建 ON/构建 OFF，清单以此文件为准）
+│       └── ci.yml                 CI 作业定义（11 个：布局/门禁/lint/构建 ON/构建 OFF，清单以此文件为准）
 │
 ├── scripts/                       CI 门禁脚本（仓级；仅标准库，不引入包依赖）
 │   └── ci/
 │       ├── check_style.py         文件卫生：LF / UTF-8 / 末尾单空行 / 无行尾空白
 │       ├── check_contracts.py     契约快照：接口变更必须同步 contracts.sha256
 │       ├── check_params.py        README 参数表 ↔ declare_parameter ↔ 兵种配置三方一致
+│       ├── check_test_config.py   生产非默认参数必须有具名测试覆盖（债务台账只许缩）
 │       ├── check_tree_doc.py      本文件与实际跟踪文件双向一致
 │       ├── test_guards.py         门禁自检：注入已知缺陷，证明每个门禁真的会红
 │       └── test_ros_results.py    把 colcon 的 gtest 结果汇总成覆盖清单（pytest 收集）

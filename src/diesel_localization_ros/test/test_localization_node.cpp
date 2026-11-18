@@ -6,6 +6,9 @@
 
 #include "localization_node_test_support.hpp"
 
+#include <diesel/localization_map/alignment_metrics.hpp>
+#include <diesel/localization_map/observability.hpp>
+#include <diesel/localization_map/point_cloud.hpp>
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -511,6 +514,156 @@ TEST(LocalizationNodeTest, MapToOdomJitterUnderConstantVelocity) {
                 *bounds.second, spread);
     EXPECT_GE(registrations, 15U) << "配准次数太少，样本不足以下结论";
     EXPECT_LT(spread, 0.005) << "map → odom 在匀速直行时被配准时刻差拉出了漂移";
+}
+
+/// 走廊地图：沿 x 每 2 m 交替一段侧墙（y=0 的 x-z 面）与一段地面（z=0 的 x-y 面），
+/// 每段横向铺开 ±1 m，总长 30 m。
+///
+/// 为什么不能用 `TempMapDir()` 的默认地图：那是 3 个共线点，法向覆盖 0%、
+/// 信息矩阵全零，可观性报 6/6 不可观——那不是「走廊退化」，是「没有几何」，
+/// 与生产场景无关（实测：健康状态机因此永远进不了 OK，一帧 TF 都发不出来）。
+///
+/// 为什么要交替而不是一面墙加一块地面：harness 的合成点云是**沿 x 的一条直线**
+/// （`make_cloud_msg` 里 y=z=0），单一平面只能提供 2 个可观自由度
+/// （法向平移 + 绕法向以外一轴的旋转），4/6 不可观仍然过不了 sentry 的 3。
+/// 而把墙与地面叠在同一条直线上，直线就落在两面的交线上，交线点的法向估计不成立
+/// （实测 `点面约束=0`）。交替分段让直线在每一段都落在该面的**内部**，
+/// 法向沿 x 交替取 ±y / ±z，于是可观方向凑到 4 个、不可观剩 {沿走廊平移, 绕 x 旋转}。
+/// 沿走廊平移不可观正是 D62 两个缺陷的现场几何。
+/// x 取到 30 m 是为了让 8 m 行程末端、跨度 19.5 m 的点云仍整帧有对应。
+inline diesel::localization_map::PointCloud make_corridor_cloud() {
+    diesel::localization_map::PointCloud cloud;
+    for (int xi = 0; xi <= 240; ++xi) {
+        const float x = 0.25F * static_cast<float>(xi);
+        const bool wall = (static_cast<int>(x / 2.0F) % 2) == 0;
+        for (int ti = -4; ti <= 4; ++ti) {
+            const float t = 0.25F * static_cast<float>(ti);
+            cloud.points.emplace_back(x, wall ? 0.0F : t, wall ? t : 0.0F);
+        }
+    }
+    return cloud;
+}
+
+/// 把同一份几何写成 PCD 文本喂给节点。前置条件校验直接用 `make_corridor_cloud()`，
+/// 两边共用一个来源，避免「测的几何」与「跑的几何」悄悄分叉。
+inline std::string make_corridor_pcd() {
+    const auto cloud = make_corridor_cloud();
+    std::string text = "VERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH " +
+                       std::to_string(cloud.size()) + "\nHEIGHT 1\nPOINTS " +
+                       std::to_string(cloud.size()) + "\nDATA ascii\n";
+    for (const auto& point : cloud.points) {
+        text += std::to_string(point.x()) + " " + std::to_string(point.y()) + " " +
+                std::to_string(point.z()) + "\n";
+    }
+    return text;
+}
+
+/// D63 用例（被测配置对齐生产）：按 sentry 生产口径**开启**可观性投影后，匀速直行时
+/// 位姿必须真的前进。
+///
+/// 为什么必须单独立一条：`observability_ratio_threshold` 的代码默认值是 0.0（投影关闭），
+/// 只有 `sentry.yaml` 写 0.05。在本用例之前，全部节点用例都不设它，于是
+/// `observability_enabled` 恒为假、投影分支一次都没执行过——D62 修的两个米级缺陷
+/// 就是在这个盲区里活了 14 天、被「修」过两次。`check_test_config.py`（D63）现在把
+/// 「生产非默认参数必须有具名用例」钉成门禁，本用例是它划掉的第一条债。
+///
+/// 判据双向（方法论 G2）：位移同时设下限与上限——下限拦「冻结」（D62 的 P0-0，
+/// 位移≈0），上限拦「发散」（投影把不可观方向的退化解当成修正量灌进来）。
+/// 只测「越小越好」的抖动量是不够的：位姿不动时抖动也小。
+///
+/// 桩配准返回 `initial_guess` 原样（`FixedDelayAligner`），即「配准完美」：
+/// 修好后 `registered * guess⁻¹ = I`，投影修正量恒零，位姿逐帧跟着里程计走；
+/// 父提交投影的是 `registered * map_to_base_⁻¹`（含整段里程计传播），
+/// 不可观分量被一并删掉，位姿冻结在起点。
+///
+/// 关于健康状态：本夹具实测 4/6 方向不可观（`tx ty tz rx`），超过 sentry 的
+/// `max_unobservable_dofs: 3`，所以状态机停在 INITIALIZING、不发 TF。这是**夹具的
+/// 几何性质**，不是被测缺陷：合成点云是一条直线，能提供的约束本来就撑不满 6 个自由度。
+/// 因此本用例读的是状态消息里的 `pose`——`publish_state()` 无条件按
+/// `map_to_odom_ * odom_to_base_` 计算它，与健康状态无关，正是 D62 改动的那个量。
+/// 健康判据本身由 L5 用例（`MinSourcePointsParameterTakesEffect`）覆盖。
+TEST(LocalizationNodeTest, ProductionObservabilityKeepsPoseAdvancing) {
+    // 2 m/s × 8 s = 16 m。速度不是随手取的：父提交每帧只吃掉前进量的一个固定比例
+    // （实测约 13%），行程越长、被吃掉的绝对量越大，判据才不会因为「某台机器慢、
+    // 配准帧数少」而漏判。1 m/s 时父提交只丢 1.0 m，配准帧数掉到 15 就恰好蒙混过关。
+    constexpr double kSpeedMps = 2.0;
+    constexpr double kDurationSec = 8.0;
+    constexpr double kTravelM = kSpeedMps * kDurationSec;
+    // 0.5 m：留给首帧预热与采样对齐；冻结/被吃掉时父提交丢的是米级。
+    constexpr double kAdvanceToleranceM = 0.5;
+    constexpr int kCloudPoints = 40;
+    constexpr double kProductionRatioThreshold = 0.05;
+    TempMapDir map(make_corridor_pcd());
+    auto overrides = map_overrides(map);
+    // sentry.yaml 的生产值，不是代码默认值（0.0 / 6）。两个都要设：只设阈值而把
+    // dofs 留在 6 等于「六个方向全不可观也算可观」，健康判据仍是关的（审计 L5）。
+    overrides.emplace_back("observability_ratio_threshold", kProductionRatioThreshold);
+    overrides.emplace_back("max_unobservable_dofs", 3);
+    NodeHarness harness(overrides, 200ms);
+
+    std::vector<double> map_to_base_x;
+    harness.drive(
+        std::chrono::milliseconds(8000), 20ms, [&harness, &map_to_base_x](std::int64_t elapsed_ms) {
+            harness.publish_odom(0.001 * kSpeedMps * static_cast<double>(elapsed_ms), 0.0);
+            if (elapsed_ms % 100 < 20) {
+                // 40 点跨 19.5 m，横跨约 10 个交替段：两种法向都稳定采到。
+                // 10 点只跨 4.5 m，实测某些时刻整帧落在段边界附近，
+                // 有效法向只剩一种，点面约束掉到 7~8 条。
+                harness.publish_cloud(kCloudPoints);
+            }
+            const auto state = harness.last_state();
+            if (state.stamp_ns != 0) {
+                map_to_base_x.push_back(state.x);
+            }
+        });
+
+    ASSERT_GE(map_to_base_x.size(), 20U) << "没有采到足够多的位姿样本";
+    // 位移取首末样本之差：判据是「有没有跟着走」，不是「每帧都准」。
+    const double advance = map_to_base_x.back() - map_to_base_x.front();
+    const auto registrations = harness.diagnostics().align_runs;
+
+    // 前置条件：**独立于被测节点**再算一遍可观性，证明这份几何在生产阈值下
+    // 确实把「沿运动方向的平移」判成不可观。没有这一条，阈值被误改回 0.0 时
+    // 本用例会「因为根本没有投影所以完美跟随」而假绿——那正是 D62 之前的盲区。
+    // 索引/法向参数与节点建图时一致（localization_node.cpp 的 load_map）：
+    // 体素 0.1 m、法向邻域取体素的 2 倍、最少 6 个邻点、对应距离 0.5 m。
+    const auto map_cloud = diesel::localization_map::voxel_downsample(make_corridor_cloud(), 0.1);
+    const diesel::localization_map::PointCloudIndex index(map_cloud, 0.5);
+    const diesel::localization_map::NormalCache normals(map_cloud, 0.2, 6);
+    diesel::localization_map::PointCloud source;
+    for (int point = 0; point < kCloudPoints; ++point) {
+        source.points.emplace_back(0.5F * static_cast<float>(point), 0.0F, 0.0F);
+    }
+    Eigen::Isometry3d midway = Eigen::Isometry3d::Identity();
+    midway.translation() = Eigen::Vector3d(0.5 * kTravelM, 0.0, 0.0);
+    // 力臂取 map→odom 的原点：本用例里配准完美，map→odom 始终是恒等变换。
+    const Eigen::Vector3d lever = Eigen::Vector3d::Zero();
+    const auto report = diesel::localization_map::analyze_observability(
+        source, midway, index, normals, 0.5, kProductionRatioThreshold, &lever);
+    // observable[i] 对应第 i 个**特征方向**（升序），不是第 i 个自由度；
+    // 因此把「沿 x 平移」这个自由度投到可观子空间上，看它还剩多少。
+    double observable_share = 0.0;
+    for (int direction = 0; direction < diesel::localization_map::kDofCount; ++direction) {
+        if (report.observable[static_cast<std::size_t>(direction)]) {
+            const double component = report.eigenvectors.col(direction)[0];
+            observable_share += component * component;
+        }
+    }
+    std::printf("D63 回执: samples=%zu align_runs=%llu map_to_base 位移=%.4fm (真实 %.4fm) "
+                "不可观=%d/6 点面约束=%zu 沿运动方向的可观占比=%.4f\n",
+                map_to_base_x.size(), static_cast<unsigned long long>(registrations), advance,
+                kTravelM, report.unobservable_count, report.inlier_count, observable_share);
+
+    EXPECT_GE(registrations, 15U) << "配准次数太少，样本不足以下结论";
+    EXPECT_GE(report.unobservable_count, 1) << "夹具没有构造出任何不可观方向";
+    // 0.05：与生产阈值同量级。沿运动方向若大部分可观，投影就不会拦它，
+    // 本用例也就测不到 D62 的失效。
+    EXPECT_LT(observable_share, kProductionRatioThreshold)
+        << "沿运动方向竟然可观：夹具几何变了，本用例测不到投影分支";
+    EXPECT_GT(advance, kTravelM - kAdvanceToleranceM)
+        << "可观性投影把里程计的前进一并删掉了，位姿没有跟着机器人走（D62 的 P0-0）";
+    EXPECT_LT(advance, kTravelM + kAdvanceToleranceM)
+        << "位姿前进量超过真实行程：不可观方向的退化解被当成修正量灌了进来";
 }
 
 /// L6 用例（TF 时间戳）：`map → odom` 只在配准成功那一刻变化，所以它的 header.stamp

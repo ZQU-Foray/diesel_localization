@@ -6,6 +6,7 @@
 #   file-hygiene    文件卫生（LF / UTF-8 / 末尾单空行 / 无行尾空白）
 #   doc-sync        tree.md 与实际跟踪文件双向一致
 #   param-contract  README 参数表 ↔ declare_parameter ↔ 兵种配置三方一致
+#   test-config     生产非默认参数必须有具名测试覆盖（债务台账只许缩不许长）
 #   contract-lock   msg/srv/action 接口指纹快照
 #   gate-selftest   门禁自检：注入已知缺陷，证明每个门禁真的会红
 #   lint-python     Python 语法/格式（本仓仅剩 bringup launch 的 .py）
@@ -127,6 +128,20 @@ jobs:
       - name: 校验 README 参数表 ↔ declare_parameter ↔ 兵种配置
         run: python3 scripts/ci/check_params.py
 
+  # ---- 被测配置对齐生产 ----
+  # param-contract 校验的是「三处声明一致」，它不管「测试到底跑没跑生产那一档」。
+  # D62 的两个米级缺陷就活在这个盲区里：observability_ratio_threshold 的代码默认值
+  # 是 0.0（投影关闭），只有 sentry.yaml 写 0.05，于是全部节点用例都在投影关闭下跑。
+  # 本作业把「生产非默认参数必须有具名用例」钉成断言，未覆盖的必须登记在债务台账里，
+  # 且台账只许缩不许长（决定见 decision.md D63）。
+  test-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验生产非默认参数的测试覆盖
+        run: python3 scripts/ci/check_test_config.py
+
   # ---- 契约快照 ----
   # 下游仓按 msg 字段写回调，改一个字段名可能编译期报错，也可能运行期静默错位。
   # 快照的唯一职责是让「接口变了但没人通知下游」在 PR diff 里必然可见。
@@ -140,13 +155,13 @@ jobs:
 
   # ---- 门禁自检 ----
   # 门禁最大的失败模式是「悄悄变成恒绿」（sim-smoke 就是先例：恒跳过却显示通过）。
-  # 本作业向仓库注入 7 种已知缺陷，断言对应门禁真的会红，并断言工作区无残留。
+  # 本作业向仓库注入 9 种已知缺陷，断言对应门禁真的会红，并断言工作区无残留。
   gate-selftest:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 自检四道门禁
+      - name: 自检五道门禁
         run: python3 scripts/ci/test_guards.py
 
   # ---- Python 代码检查 ----

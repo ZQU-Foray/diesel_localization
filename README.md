@@ -173,6 +173,13 @@ include 本仓 launch 时用 `PushRosNamespace` 注入**，本仓的 `localizati
 （历史：旧校验脚本随工具包删除后曾一度退回人工核对，`decision.md` D16；D18 以零依赖方式恢复。）
 **本表是实现之外的唯一参数清单。**
 
+三方一致只保证「声明没有漂移」，不保证「测试跑的是生产那一档」。后者由 CI 作业
+`test-config`（`scripts/ci/check_test_config.py`）看守：**凡是兵种配置里写了非默认值的参数，
+必须有至少一条具名测试覆盖它**；暂时补不上的要登记在该脚本的债务台账里，写明为什么测不到
+与什么条件下必须补，且台账只许缩不许长（`decision.md` D63）。
+这条约束的来历是 D62：`observability_ratio_threshold` 的代码默认值是 `0.0`（投影关闭），
+只有 `sentry.yaml` 写 `0.05`，于是全部节点用例都在投影关闭下跑，两个米级缺陷在盲区里活了 14 天。
+
 #### 本地化节点参数（`diesel_localization`）
 
 | 参数 | 默认 | 说明 |
@@ -319,7 +326,7 @@ ascii 段里字段数不足的行、以及 x/y/z 为 NaN/inf 的点会被跳过�
   找不到 PCL 时 configure 直接失败，而不是悄悄换成另一个后端（decision.md D21）。
 - `ONNX Runtime` 仅 `diesel_localization_relocalization` 使用，`DIESEL_WITH_ONNX=ON` 时编译。
 - 验证过的构建环境是 Linux（ROS 2 Humble；CI 用 `ros:humble` 容器）。Windows 上
-  `scripts/ci/` 的四道门禁与 pytest 自检可以正常跑（`.gitattributes` 已把检出换行钉成 LF，
+  `scripts/ci/` 的五道门禁与 pytest 自检可以正常跑（`.gitattributes` 已把检出换行钉成 LF，
   门禁按字节判 CRLF，不依赖平台的换行翻译），但 **ROS 2 + PCL 的 Windows 构建从未验证过**；
   要在 Windows 上试，先用 `-DDIESEL_WITH_PCL=OFF` 把 PCL 摘掉，别一上来就卡在找 PCL。
 

@@ -2262,3 +2262,87 @@ Consequences:
   被算进里程计断流判据）**均未在本条修复**，各自独立立项。
 
 状态：已实现（2026-11-17，分支 `fix/projection-scope-1117`；`plan.md` M13）。
+
+## D63 被测配置必须对齐生产：生产非默认参数要有具名用例，债务台账只许缩
+
+Date: 2026-11-17
+
+Context: 复盘 git 历史时发现一个反复出现的形状：本仓 86 个非 merge 提交里 29 个是 fix，
+其中 19 个都在改同一个文件 `src/diesel_localization_ros/src/localization_node.cpp`。
+D62 那两个米级缺陷不是「没人测」，而是**测的那一档根本不是生产那一档**：
+`observability_ratio_threshold` 的 `declare_parameter` 默认值是 `0.0`（投影关闭），
+只有 `sentry.yaml` 写 `0.05`；节点测试的 harness 只设 per-test 传入的参数，
+于是 17 条节点用例全部在投影关闭下跑，`observability_enabled` 恒为假。
+`check_params.py` 校验的是 README ↔ `declare_parameter` ↔ 兵种配置**三处声明一致**，
+三处都写 0.0 时它全绿——它从设计上就不管「测试跑没跑生产分支」。
+同一个缺陷因此在 14 天里被「修」过两次（`03ae823` L15 只改了生产者一侧）。
+
+Decision:
+- 新增 `scripts/ci/check_test_config.py` 与 CI 作业 `test-config`：凡兵种配置里写了
+  **非代码默认值**的参数，必须有至少一条具名测试覆盖它（判定口径：参数名以字符串
+  字面量出现在 `src/*/test/` 的非注释行里）。
+- 覆盖不了的要登记在该脚本的 `DEBT_LEDGER` 里，写明**为什么测不到**与**什么条件下必须补**。
+- 台账是**棘轮**，两条断言方向相反：①未覆盖且未登记 → 红（不许新增债）；
+  ②已登记但现在已被覆盖、或该参数已不再是非默认 → 也红（债务只许缩不许长）。
+- `test_guards.py` 同步加 1 条基线 + 2 条注入，分别验证这两个方向真的会红。
+- 本轮补一条生产口径的节点用例 `ProductionObservabilityKeepsPoseAdvancing`，
+  划掉 `observability_ratio_threshold` 与 `max_unobservable_dofs` 两条债。
+
+Reason:
+- 只有①没有②，台账会退化成「登记即放行」的垃圾场：新覆盖写了却没人划账，
+  门禁慢慢变回恒绿——`sim-smoke` 恒跳过却显示通过就是本仓踩过的先例（D16）。
+- 判定用「字符串字面量出现在非注释行」而不是正则匹配 `declare_parameter` 调用：
+  测试里传参的写法是 `overrides.emplace_back("name", value)`，按声明式正则匹配会把
+  已覆盖的 `min_source_points` 误报成缺口（初版实测 14 个全报 GAP，全是假阳性）。
+- 不一次补满 13 条：其中 4 条配准调参在节点测试里是**惰性**的（harness 注入假 aligner，
+  参数根本不进真实配准），补了也只是让门禁变绿而测不到东西。宁可如实登记。
+
+Alternatives:
+- 否决「把 `declare_parameter` 默认值改成生产值」：会同时改变 heavy/infantry 的行为，
+  且 README 参数表是实现之外的唯一清单，改默认值等于改需求。
+- 否决「只报 warning 不拦」：本仓已实证靠人眼维持的约束会漂移（D15/D16）。
+- 否决「用日志断言投影分支执行过」：日志文案不是契约，改一个字就假绿。改用
+  **独立于被测节点**再算一遍 `analyze_observability`，断言「沿运动方向的平移落在
+  不可观子空间里」（实测可观占比 0.0000），几何与参数两边共用同一个夹具来源。
+- 否决「一次性补满 13 条债」：见 Reason 第三条。
+
+Consequences:
+- 门禁口径：14 个生产非默认参数，3 个已覆盖（`min_source_points` /
+  `observability_ratio_threshold` / `max_unobservable_dofs`），11 个在台账内，
+  按「为什么测不到」分四组：配准调参 4（假 aligner 惰性）、健康阈值 4（缺 heavy 口径）、
+  聚类 2（core 层按结构体直测、不过 ROS 参数）、`fov_horizontal_deg` 1（sentry 30°
+  与仿真 360° 两条路径都无节点用例）。
+- 新用例自带反例，两臂都真跑过（同一份测试文件，只换产品代码）：
+
+  | 臂 | 产品代码 | map→base 位移 | 真实行程 | 结果 |
+  |---|---|---|---|---|
+  | 修复 | 本分支 | **15.9340 m** | 16.0 m | PASS |
+  | 父提交 | `origin/dev` `ef4715b` | 13.9527 m | 16.0 m | **FAIL**（< 15.5） |
+
+  两臂 `align_runs` 都是 38、不可观都是 4/6、点面约束都是 20 —— 唯一变量是产品代码。
+- 速度取 2 m/s 不是随手写的：父提交每帧只吃掉前进量的一个固定比例（实测约 13%），
+  1 m/s 时只丢 1.0 m，配准帧数掉到 15 就恰好蒙混过关；2 m/s 丢 2.05 m，对 0.5 m 容差
+  有 4 倍余量。
+- 该夹具实测 4/6 方向不可观（`tx ty tz rx`），超过 sentry 的 `max_unobservable_dofs: 3`，
+  所以状态机停在 INITIALIZING、不发 TF。这是**夹具的几何性质**（合成点云是一条直线，
+  撑不满 6 个自由度），不是被测缺陷；用例因此读状态消息里的 `pose`——`publish_state()`
+  无条件按 `map_to_odom_ * odom_to_base_` 算它，与健康状态无关，正是 D62 改动的那个量。
+  健康判据本身由 L5 用例覆盖。
+- `test_guards.py` 由 11 条增至 14 条（实测 14 passed）；CI 由 10 个作业增至 11 个。
+  全量测试 PCL ON 147 / OFF 140 条目（此前 146 / 139），gtest 18 文件 129 例
+  （此前 128），两轮 0 failures 0 errors；五道门禁与 clang-format 均干净。
+- 台账里的 11 条债是**显式的技术债清单**，不是免责声明：每条都带触发条件，
+  后续谁碰到对应模块就该顺手划掉一条。
+- **写这道门禁的人当场犯了同一类错，留痕在此**：PR #14 首轮 CI 的 `lint-python` 红。
+  `check_test_config.py` 的 `import check_params` 挂了 `noqa` 抑制 `E402`，但本仓
+  `pyproject.toml` 只设 `target-version`、ruff 用默认规则集（**不含 E402**），
+  于是 `RUF100 Unused noqa directive (non-enabled: E402)` 报错；`test_guards.py`
+  新增的两处也没按 black 折行。本地当时只跑了仓内五道门禁 + clang-format，
+  **没跑 CI 真正执行的 `ruff check .` 与 `black --check .`**——验证的那一档不是
+  CI 那一档，正是本决策要拦的 C5。修法见 `f222373`：去掉 noqa（改普通注释说明
+  为什么必须先补 `sys.path`）、按 black 折行。**结论：仓内门禁通过不等于 CI 通过，
+  本地验证清单必须包含 CI 用的那两个 linter**（`ruff check .`、`black --check .`，
+  本机在 `.dsh-tmp/pylibs18`）。另注意 ruff 会把注释里出现的 noqa 字面量也当指令解析，
+  所以说明文字里不要写出完整的抑制指令形式。
+
+状态：已实现（2026-11-17，分支 `feat/test-config-gate-1117`；`plan.md` M14）。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""门禁自检：注入已知缺陷，证明四道门禁真的会红。
+"""门禁自检：注入已知缺陷，证明五道门禁真的会红。
 
 为什么需要自检——`decision.md` D16 的教训是「恒跳过的检查看起来是绿的」。
 一个永远不会失败的检查比没有检查更危险：它给出虚假的安全感。所以本文件
@@ -36,6 +36,10 @@ CONTRACT_PROBE = (
     ROOT / "src" / "diesel_localization_ros" / "msg" / "LocalizationState.msg"
 )
 PARAM_PROBE = ROOT / "README.md"
+CONFIG_PROBE = ROOT / "src" / "diesel_localization_bringup" / "config" / "sentry.yaml"
+TEST_PROBE = (
+    ROOT / "src" / "diesel_localization_ros" / "test" / "test_localization_node.cpp"
+)
 TREE_PROBE = ROOT / "scripts" / "ci" / "probe_untracked.py"
 
 
@@ -81,6 +85,10 @@ def test_baseline_check_tree_doc_passes() -> None:
     assert _run("check_tree_doc.py") == 0
 
 
+def test_baseline_check_test_config_passes() -> None:
+    assert _run("check_test_config.py") == 0
+
+
 # ------------------------------------------------- 注入：每种缺陷都必须被对应门禁抓住
 
 
@@ -122,6 +130,27 @@ def test_params_catches_readme_default_drift() -> None:
         ),
     ):
         assert _run("check_params.py") == 1
+
+
+def test_test_config_catches_new_production_switch() -> None:
+    # D63 要拦的正是这种漂移：把某个兵种的生产值从代码默认值挪开，却没有配任何用例。
+    # filter_enabled 三个兵种都写 false（= 代码默认值），把它改成 true 就凭空多出一个
+    # 「生产开着、测试从没跑过」的分支——审计 P2-1 的 EKF 全关就是这个形状。
+    with _mutated(
+        CONFIG_PROBE,
+        lambda b: b.replace(b"filter_enabled: false", b"filter_enabled: true", 1),
+    ):
+        assert _run("check_test_config.py") == 1
+
+
+def test_test_config_catches_stale_debt_entry() -> None:
+    # 棘轮的另一半：债务台账里的条目一旦被覆盖，就必须从台账里划掉。
+    # 少了这条断言，台账会退化成「登记即放行」的垃圾场，门禁慢慢变回恒绿。
+    with _mutated(
+        TEST_PROBE,
+        lambda b: b + b'\nstatic const char* kGuardProbe = "align_max_iterations";\n',
+    ):
+        assert _run("check_test_config.py") == 1
 
 
 def test_tree_doc_catches_untracked_listed_file() -> None:
