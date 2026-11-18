@@ -37,7 +37,9 @@ CONTRACT_PROBE = (
 )
 PARAM_PROBE = ROOT / "README.md"
 CONFIG_PROBE = ROOT / "src" / "diesel_localization_bringup" / "config" / "sentry.yaml"
-TEST_PROBE = ROOT / "src" / "diesel_localization_ros" / "test" / "test_localization_node.cpp"
+TEST_PROBE = (
+    ROOT / "src" / "diesel_localization_ros" / "test" / "test_localization_node.cpp"
+)
 TREE_PROBE = ROOT / "scripts" / "ci" / "probe_untracked.py"
 
 
@@ -135,7 +137,8 @@ def test_test_config_catches_new_production_switch() -> None:
     # filter_enabled 三个兵种都写 false（= 代码默认值），把它改成 true 就凭空多出一个
     # 「生产开着、测试从没跑过」的分支——审计 P2-1 的 EKF 全关就是这个形状。
     with _mutated(
-        CONFIG_PROBE, lambda b: b.replace(b"filter_enabled: false", b"filter_enabled: true", 1)
+        CONFIG_PROBE,
+        lambda b: b.replace(b"filter_enabled: false", b"filter_enabled: true", 1),
     ):
         assert _run("check_test_config.py") == 1
 

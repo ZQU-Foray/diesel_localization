@@ -41,7 +41,9 @@ from pathlib import Path
 # 被 import 时（例如 pytest 直接收集本文件）需要显式补上。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import check_params  # noqa: E402  - 必须先补 sys.path 再 import
+# 必须先补 sys.path 再 import。本仓 ruff 只启用默认规则集（不含 E402），
+# 所以这里不能挂 noqa 抑制注释：RUF100 会把「抑制了未启用规则」判成错误。
+import check_params
 
 CONFIG_DIR = Path("src/diesel_localization_bringup/config")
 TEST_GLOB = "*/test/*"
