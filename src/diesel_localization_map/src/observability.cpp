@@ -245,4 +245,44 @@ project_delta_to_observable(const Eigen::Matrix<double, kDofCount, 1>& delta,
     return projected;
 }
 
+namespace {
+
+/// 左乘增量 → 6 维 twist：平移在前，旋转用 angle-axis 向量在后（小角度口径与信息矩阵一致）。
+Eigen::Matrix<double, kDofCount, 1> to_twist(const Eigen::Isometry3d& delta) {
+    Eigen::Matrix<double, kDofCount, 1> twist;
+    twist.head<3>() = delta.translation();
+    const Eigen::AngleAxisd rotation(delta.linear());
+    twist.tail<3>() = rotation.angle() * rotation.axis();
+    return twist;
+}
+
+/// 6 维 twist → 左乘增量。`angle` 为 0 时保持单位旋转，避免除零。
+Eigen::Isometry3d from_twist(const Eigen::Matrix<double, kDofCount, 1>& twist) {
+    Eigen::Isometry3d delta = Eigen::Isometry3d::Identity();
+    delta.translation() = twist.head<3>();
+    const Eigen::Vector3d omega = twist.tail<3>();
+    const double angle = omega.norm();
+    if (angle > 1e-12) {
+        delta.linear() = Eigen::AngleAxisd(angle, omega / angle).toRotationMatrix();
+    }
+    return delta;
+}
+
+} // namespace
+
+Eigen::Isometry3d project_registration_correction(const Eigen::Isometry3d& guess,
+                                                  const Eigen::Isometry3d& registered,
+                                                  const ObservabilityReport& report,
+                                                  const Eigen::Vector3d& lever_origin) {
+    // 只取「配准相对初值」的修正：guess 里已经含里程计外推，投影不能碰它（D62 / 复核 P0-0）。
+    Eigen::Matrix<double, kDofCount, 1> twist = to_twist(registered * guess.inverse());
+    // 换算成信息矩阵的力臂口径：τ = t + ω × lever（D62 / 复核 P0-1）。
+    twist.head<3>() += twist.tail<3>().cross(lever_origin);
+    const Eigen::Matrix<double, kDofCount, 1> projected =
+        project_delta_to_observable(twist, report);
+    Eigen::Matrix<double, kDofCount, 1> back = projected;
+    back.head<3>() -= projected.tail<3>().cross(lever_origin);
+    return from_twist(back) * guess;
+}
+
 } // namespace diesel::localization_map
