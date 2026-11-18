@@ -360,9 +360,10 @@
   - [x] **i7 PR + CI**：**PR #13**（base `dev`，2026-11-17 开）CI **10/10 全绿**
     （run 44060220912：build-ros2 5m4s / build-nopcl 4m55s / contract-lock / dir-layout /
     doc-sync / file-hygiene / gate-selftest / lint-c / lint-python / param-contract）。
-  - [ ] **i8 合并**：`mergeable=MERGEABLE` 但 `mergeStateStatus=BLOCKED`——`dev` 的分支保护
-    要求 1 个 approving review，而 GitHub 不允许作者批准自己的 PR。**卡在人工评审**，
-    不是技术问题；主人有空再审。合并后 M14 的分支需 rebase 到新 `dev`。
+  - [x] **i8 合并**：主人评审后 **PR #13 已 MERGED**，`dev` 推进到 `7f4d81a`
+    （`Merge pull request #13 from ZQU-Foray/fix/projection-scope-1117`）。
+    合并前 `mergeStateStatus=BLOCKED` 的原因是 `dev` 分支保护要求 1 个 approving review
+    而作者不能自批——不是技术问题。M14 的分支随后已 rebase 到该基线。
 
 - [ ] **M14 被测配置对齐生产（方法论 B1+B2）**（2026-11-17，分支 `feat/test-config-gate-1117`；
   取舍见 `decision.md` D63；堆叠在 `fix/projection-scope-1117` 之上，因为新用例需要 D62 的修复）
@@ -386,17 +387,26 @@
     点面约束 20 完全一致。速度取 2 m/s 是因为父提交按固定比例（约 13%）吃前进量，
     1 m/s 只丢 1.0 m，配准帧数掉到 15 就会蒙混过关；2 m/s 丢 2.05 m，对 0.5 m 容差 4 倍余量。
   - [x] **i5 门禁与全量测试**：五道门禁全 PASS，`test_guards.py` **14 passed**，
-    clang-format 18.1.8 `--dry-run -Werror` 干净；Release 全量构建 5 包后
+    clang-format 18.1.8 `--dry-run -Werror` 干净；**CI 用的 `ruff check .` 与
+    `black --check .` 也已纳入本地清单**（首轮漏跑导致 PR #14 的 `lint-python` 红，
+    教训与修法见 `decision.md` D63 末条、提交 `f222373`）；Release 全量构建 5 包后
     `colcon test` **PCL ON 147 条目 / OFF 140 条目**（此前 146 / 139，+1 即新增用例），
     两轮 0 failures 0 errors；`test_ros_results.py` 读到 **18 个结果文件 / 129 个用例**
     （此前 128）、failures=0 errors=0。
   - [x] **i6 文档同步**：`README.md` 补 `test-config` 契约与来历、「四道门禁」改五道；
     `decision.md` D63；`tree.md` 增脚本行、CI 作业数改 11。
-  - [x] **i7 提交 + 推送**：四个逻辑提交（`241831f` 用例 / `8ea7cbd` 门禁+CI /
-    `a1dab20` 自检注入 / `8b56929` 文档）已推到 `origin/feat/test-config-gate-1117`。
-    用例提交刻意排在门禁提交**之前**，否则中间那个提交会让新门禁红。
-  - [ ] **i8 PR + CI**：按主人定的**串行**流程，等 PR #13 合入 `dev` 后再 rebase 本分支
-    并开 PR（届时基线变了，需要 force-push）。PR 正文已备好，尚未提交。
+  - [x] **i7 提交 + 推送**：四个逻辑提交（用例 / 门禁+CI / 自检注入 / 文档）已推到
+    `origin/feat/test-config-gate-1117`。用例提交刻意排在门禁提交**之前**，
+    否则中间那个提交会让新门禁红。#13 合并后按串行流程 rebase 到 `dev` `7f4d81a`，
+    `--force-with-lease` 推送，五个提交重写为 `ded9cd6` / `407596e` / `1458f63` /
+    `e5fbc19` / `fde678d`；rebase 后五道门禁与 14 条自检重跑全 PASS，
+    五个提交在临时 worktree 里逐个 checkout 验门禁也各自独立通过。
+  - [x] **i8 PR + CI**：**PR #14**（base `dev`，2026-11-18 开）。首轮 11 个作业里
+    `lint-python` 红（noqa 抑制了未启用的 E402 + black 未折行，run 44276711406），
+    其余 10 个绿；`f222373` 修好后 **11/11 全绿**（run 44278037152，含新增的
+    `test-config` 作业；build-ros2 5m5s / build-nopcl 4m59s）。
+  - [ ] **i9 合并**：`mergeable=MERGEABLE`、`mergeStateStatus=BLOCKED`——同样卡在
+    `dev` 要求的 1 个 approving review（作者不能自批），等主人评审。
 
 - [ ] **P2 可选**：ONNX Runtime CPU 全局重定位（默认 OFF）
   （`diesel_localization_relocalization` 目前是**骨架**：`PlaceLocalizer::estimate()`
@@ -405,13 +415,13 @@
 
 ## 当前 Agent State
 
-**NOW（2026-11-17）**：`dev` @ `ef4715b`（PR #1–#12 全合并）。两条工作分支：
-`fix/projection-scope-1117`（M13 / D62）修掉可观性投影的两处错——投影对象含整段里程计
-传播（P0-0）、力臂口径不一致（P0-1），代码 + 单测 + 门禁 + 实链二进制 A/B 已完成、**已推送**；
-`feat/test-config-gate-1117`（M14 / D63）堆叠在它之上，补第五道门禁 `test-config`
-（被测配置必须对齐生产，债务台账双向棘轮）与一条生产口径节点用例（自带父提交反例），
-**已推送**。**PR #13 已开、CI 10/10 全绿，卡在 `dev` 要求的 1 个 approving review**
-（作者不能自批）；第二个分支按串行流程待命，等 #13 合并后 rebase 再开 PR。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
+**NOW（2026-11-18）**：`dev` @ `7f4d81a`（PR #1–#13 全合并）。
+**M13 / D62 已合并**：可观性投影的两处错——投影对象含整段里程计传播（P0-0）、
+力臂口径不一致（P0-1）——代码 + 单测 + 门禁 + 实链二进制 A/B 全部交付，PR #13 CI 10/10 全绿后合入。
+**M14 / D63 在评审中**：分支 `feat/test-config-gate-1117` 已 rebase 到 `7f4d81a`，
+补第五道门禁 `test-config`（被测配置必须对齐生产，债务台账双向棘轮）与一条生产口径
+节点用例（自带父提交反例）；**PR #14 已开、CI 11/11 全绿**（run 44278037152），
+卡在 `dev` 要求的 1 个 approving review（作者不能自批）。M0–M4、M7–M12 完成；M9 只余 i8（GUI 审查产物）；M5c（实车 bag）与
 M6（2027 场地地图与标定）卡在实车/场地条件；P2（ONNX 全局重定位）只有骨架。
 **下一个该动的**是复核报告里的 P0-2（DEGRADED 不落 LOST，属健康契约变更，必须先定
 LOST 后的恢复策略），其次是「已知缺口」里外部位姿那条 TF 打戳。

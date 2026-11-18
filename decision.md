@@ -2333,5 +2333,16 @@ Consequences:
   （此前 128），两轮 0 failures 0 errors；五道门禁与 clang-format 均干净。
 - 台账里的 11 条债是**显式的技术债清单**，不是免责声明：每条都带触发条件，
   后续谁碰到对应模块就该顺手划掉一条。
+- **写这道门禁的人当场犯了同一类错，留痕在此**：PR #14 首轮 CI 的 `lint-python` 红。
+  `check_test_config.py` 的 `import check_params` 挂了 `noqa` 抑制 `E402`，但本仓
+  `pyproject.toml` 只设 `target-version`、ruff 用默认规则集（**不含 E402**），
+  于是 `RUF100 Unused noqa directive (non-enabled: E402)` 报错；`test_guards.py`
+  新增的两处也没按 black 折行。本地当时只跑了仓内五道门禁 + clang-format，
+  **没跑 CI 真正执行的 `ruff check .` 与 `black --check .`**——验证的那一档不是
+  CI 那一档，正是本决策要拦的 C5。修法见 `f222373`：去掉 noqa（改普通注释说明
+  为什么必须先补 `sys.path`）、按 black 折行。**结论：仓内门禁通过不等于 CI 通过，
+  本地验证清单必须包含 CI 用的那两个 linter**（`ruff check .`、`black --check .`，
+  本机在 `.dsh-tmp/pylibs18`）。另注意 ruff 会把注释里出现的 noqa 字面量也当指令解析，
+  所以说明文字里不要写出完整的抑制指令形式。
 
 状态：已实现（2026-11-17，分支 `feat/test-config-gate-1117`；`plan.md` M14）。
